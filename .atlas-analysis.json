@@ -1,0 +1,170 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Moqtail",
+  "projectDescription": "Draft 14-compliant MOQ Transport protocol libraries for real-time media streaming over QUIC",
+  "theme": "palm",
+  "primaryColor": "#cc6e32",
+  "lightColor": "#1d2427",
+  "darkColor": "#e7e6e3",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/moqt-protocol",
+              "concepts/tracks-and-objects",
+              "concepts/publisher-subscriber",
+              "concepts/content-sources"
+            ]
+          },
+          {
+            "group": "Publisher Guide",
+            "pages": [
+              "publisher/creating-tracks",
+              "publisher/live-streaming",
+              "publisher/static-content",
+              "publisher/hybrid-content",
+              "publisher/namespaces"
+            ]
+          },
+          {
+            "group": "Subscriber Guide",
+            "pages": [
+              "subscriber/subscribing",
+              "subscriber/fetching",
+              "subscriber/playout-buffer",
+              "subscriber/track-discovery"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "utilities/object-cache",
+              "utilities/network-telemetry",
+              "utilities/clock-sync"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/relay-server",
+              "deployment/webtransport-setup"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Client",
+            "pages": [
+              "api/moqtail-client",
+              "api/client-setup"
+            ]
+          },
+          {
+            "group": "Tracks & Content",
+            "pages": [
+              "api/track",
+              "api/content-source",
+              "api/moqt-object",
+              "api/object-cache"
+            ]
+          },
+          {
+            "group": "Control Messages",
+            "pages": [
+              "api/subscribe",
+              "api/fetch",
+              "api/publish-namespace",
+              "api/track-status"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/playout-buffer",
+              "api/telemetry",
+              "api/clock-normalizer"
+            ]
+          },
+          {
+            "group": "Data Models",
+            "pages": [
+              "api/common-types",
+              "api/error-codes"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Rust Library",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "rust/introduction",
+              "rust/installation"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "rust/client",
+              "rust/relay",
+              "rust/model",
+              "rust/transport"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Draft 14-compliant MOQT protocol implementation",
+    "WebTransport-based real-time streaming",
+    "Publisher and subscriber roles with track management",
+    "Live streaming with Subscribe operations",
+    "On-demand content with Fetch operations",
+    "Hybrid content sources for live and static delivery",
+    "Object caching with memory and ring buffer strategies",
+    "GOP-aware playout buffer with latency management",
+    "Network telemetry and performance monitoring",
+    "Clock synchronization utilities",
+    "TypeScript and Rust implementations",
+    "Relay server for message forwarding"
+  ],
+  "publicApiSurface": [
+    "MOQtailClient",
+    "Track",
+    "LiveContentSource",
+    "StaticContentSource",
+    "HybridContentSource",
+    "MoqtObject",
+    "Subscribe",
+    "Fetch",
+    "PublishNamespace",
+    "SubscribeNamespace",
+    "TrackStatusMessage",
+    "MemoryObjectCache",
+    "RingBufferObjectCache",
+    "PullPlayoutBuffer",
+    "NetworkTelemetry",
+    "ClockNormalizer",
+    "FullTrackName",
+    "Tuple",
+    "ObjectForwardingPreference"
+  ]
+}
