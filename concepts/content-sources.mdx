@@ -56,7 +56,7 @@ export interface LiveObjectSource {
 ### Creating Live Sources
 
 ```typescript
-import { LiveTrackSource, MoqtObject, Location } from '@moqtail/moqtail-ts'
+import { LiveTrackSource, MoqtObject, Location } from 'moqtail'
 
 // Create ReadableStream of objects
 const liveStream = new ReadableStream<MoqtObject>({
@@ -340,7 +340,7 @@ export class RingBufferObjectCache implements ObjectCache {
 ### Creating Static Sources
 
 ```typescript
-import { StaticTrackSource, MemoryObjectCache } from '@moqtail/moqtail-ts'
+import { StaticTrackSource, MemoryObjectCache } from 'moqtail'
 
 // Create cache
 const cache = new MemoryObjectCache()
@@ -485,7 +485,7 @@ export class HybridTrackSource implements TrackSource {
 ### Creating Hybrid Sources
 
 ```typescript
-import { HybridTrackSource, RingBufferObjectCache } from '@moqtail/moqtail-ts'
+import { HybridTrackSource, RingBufferObjectCache } from 'moqtail'
 
 // Create ring buffer for recent history
 const cache = new RingBufferObjectCache(300)  // Last 10 seconds @ 30fps

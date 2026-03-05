@@ -21,7 +21,7 @@ Publishers create content and make it available to subscribers.
 ### Creating a Publisher
 
 ```typescript
-import { MOQtailClient, Track, FullTrackName, ObjectForwardingPreference } from '@moqtail/moqtail-ts'
+import { MOQtailClient, Track, FullTrackName, ObjectForwardingPreference } from 'moqtail'
 
 // Initialize client
 const publisher = await MOQtailClient.new({
@@ -46,7 +46,7 @@ publisher.addOrUpdateTrack(videoTrack)
 Make tracks discoverable by announcing namespaces:
 
 ```typescript
-import { PublishNamespace, Tuple } from '@moqtail/moqtail-ts'
+import { PublishNamespace, Tuple } from 'moqtail'
 
 const announce = new PublishNamespace(
   publisher.nextClientRequestId,
@@ -89,7 +89,7 @@ if (result instanceof PublishNamespaceError) {
 For real-time streaming:
 
 ```typescript
-import { LiveTrackSource } from '@moqtail/moqtail-ts'
+import { LiveTrackSource } from 'moqtail'
 
 // Create live content stream
 const liveStream = new ReadableStream<MoqtObject>({
@@ -135,7 +135,7 @@ const track: Track = {
 For pre-recorded or cached content:
 
 ```typescript
-import { StaticTrackSource, MemoryObjectCache } from '@moqtail/moqtail-ts'
+import { StaticTrackSource, MemoryObjectCache } from 'moqtail'
 
 const cache = new MemoryObjectCache()
 
@@ -170,7 +170,7 @@ const vodTrack: Track = {
 Combining live and cached content:
 
 ```typescript
-import { HybridTrackSource, RingBufferObjectCache } from '@moqtail/moqtail-ts'
+import { HybridTrackSource, RingBufferObjectCache } from 'moqtail'
 
 const cache = new RingBufferObjectCache(300)  // Keep last 300 objects
 const liveStream = createLiveStream()
@@ -197,7 +197,7 @@ Hybrid tracks enable catch-up scenarios where subscribers can fetch recent histo
 Publishers can proactively push content to relays:
 
 ```typescript
-import { Publish } from '@moqtail/moqtail-ts'
+import { Publish } from 'moqtail'
 
 const publish = new Publish(
   publisher.nextClientRequestId,
@@ -234,7 +234,7 @@ const subscriber = await MOQtailClient.new({
 Subscribe to namespace announcements:
 
 ```typescript
-import { SubscribeNamespace } from '@moqtail/moqtail-ts'
+import { SubscribeNamespace } from 'moqtail'
 
 const subscribeAnnounce = new SubscribeNamespace(
   Tuple.fromUtf8Path('live')  // Subscribe to 'live' prefix
@@ -252,7 +252,7 @@ await subscriber.subscribeNamespace(subscribeAnnounce)
 Subscribe to live content from the current point:
 
 ```typescript
-import { FilterType, GroupOrder } from '@moqtail/moqtail-ts'
+import { FilterType, GroupOrder } from 'moqtail'
 
 const result = await subscriber.subscribe({
   fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
@@ -337,7 +337,7 @@ const result = await subscriber.subscribe({
 Retrieve specific ranges of cached content:
 
 ```typescript
-import { FetchType } from '@moqtail/moqtail-ts'
+import { FetchType } from 'moqtail'
 
 const fetchResult = await subscriber.fetch({
   priority: 32,
@@ -375,7 +375,7 @@ if (fetchResult instanceof FetchError) {
 #### Updating Subscriptions
 
 ```typescript
-import { SubscribeUpdate } from '@moqtail/moqtail-ts'
+import { SubscribeUpdate } from 'moqtail'
 
 const update = new SubscribeUpdate(
   subscriptionRequestId,
@@ -425,7 +425,7 @@ import {
   Location,
   PublishNamespace,
   Tuple
-} from '@moqtail/moqtail-ts'
+} from 'moqtail'
 
 async function startPublisher() {
   // Create client
@@ -494,7 +494,7 @@ import {
   GroupOrder,
   SubscribeError,
   PullPlayoutBuffer
-} from '@moqtail/moqtail-ts'
+} from 'moqtail'
 
 async function startSubscriber() {
   // Create client

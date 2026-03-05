@@ -7,6 +7,10 @@ description: 'Implement smooth media playback with GOP-aware buffering and laten
 
 The `PullPlayoutBuffer` provides consumer-driven playout with GOP-aware (Group of Pictures) buffering for smooth media playback. It manages latency, handles network jitter, and automatically drops outdated content to maintain target performance.
 
+<Warning>
+**Note**: The `PullPlayoutBuffer` utility class is referenced in the README but not yet implemented in the current version (0.9.0). This page describes the planned API based on the design documentation. For now, you'll need to implement your own buffering logic or use the patterns shown below as a guide.
+</Warning>
+
 <Note>
 The playout buffer is specifically designed for video streaming applications where maintaining target latency is critical for user experience.
 </Note>

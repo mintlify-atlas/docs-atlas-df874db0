@@ -86,25 +86,25 @@ Moqtail provides three content delivery patterns:
 
 <CodeGroup>
 ```typescript Live Content
-import { LiveContentSource } from 'moqtail/client'
+import { LiveTrackSource } from 'moqtail/client'
 
 // For real-time streaming (e.g., live video)
-const liveSource = new LiveContentSource(objectStream)
+const liveSource = new LiveTrackSource(objectStream)
 ```
 
 ```typescript Static Content
-import { StaticContentSource, MemoryObjectCache } from 'moqtail/client'
+import { StaticTrackSource, MemoryObjectCache } from 'moqtail/client'
 
 // For on-demand content (e.g., video-on-demand)
 const cache = new MemoryObjectCache()
-const staticSource = new StaticContentSource(cache)
+const staticSource = new StaticTrackSource(cache)
 ```
 
 ```typescript Hybrid Content
-import { HybridContentSource } from 'moqtail/client'
+import { HybridTrackSource } from 'moqtail/client'
 
 // Combines live streaming with historical data access
-const hybridSource = new HybridContentSource(objectStream, cache)
+const hybridSource = new HybridTrackSource(objectStream, cache)
 ```
 </CodeGroup>
 

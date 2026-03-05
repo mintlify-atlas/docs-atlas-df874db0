@@ -19,7 +19,7 @@ The `NetworkTelemetry` class provides real-time monitoring of network performanc
 ## Installation
 
 ```typescript
-import { NetworkTelemetry } from '@moqtail/moqtail-ts'
+import { NetworkTelemetry } from 'moqtail'
 ```
 
 ## Basic Usage
@@ -130,7 +130,7 @@ Events older than the window duration are automatically removed when accessing m
 Use telemetry to implement adaptive bitrate (ABR) algorithms:
 
 ```typescript
-import { NetworkTelemetry } from '@moqtail/moqtail-ts'
+import { NetworkTelemetry } from 'moqtail'
 
 class AdaptiveBitrateController {
   private telemetry: NetworkTelemetry

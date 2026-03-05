@@ -57,8 +57,8 @@ The `MemoryObjectCache` provides unlimited in-memory storage with automatic sort
 ### Basic Usage
 
 ```typescript
-import { MemoryObjectCache } from '@moqtail/moqtail-ts'
-import { Location } from '@moqtail/moqtail-ts'
+import { MemoryObjectCache } from 'moqtail'
+import { Location } from 'moqtail'
 
 // Create a new memory cache
 const cache = new MemoryObjectCache()
@@ -127,7 +127,7 @@ The `RingBufferObjectCache` provides a fixed-size cache that automatically evict
 ### Initialization
 
 ```typescript
-import { RingBufferObjectCache } from '@moqtail/moqtail-ts'
+import { RingBufferObjectCache } from 'moqtail'
 
 // Create a ring buffer with capacity for 100 objects
 const cache = new RingBufferObjectCache(100)
@@ -174,13 +174,13 @@ for (const frame of liveVideoStream) {
 
 ## Integration with Content Sources
 
-Object caches are commonly used with `StaticContentSource` for on-demand content delivery:
+Object caches are commonly used with `StaticTrackSource` for on-demand content delivery:
 
 ### Static Content
 
 ```typescript
-import { StaticContentSource, MemoryObjectCache } from '@moqtail/moqtail-ts'
-import { FullTrackName, ObjectForwardingPreference } from '@moqtail/moqtail-ts'
+import { StaticTrackSource, MemoryObjectCache } from 'moqtail'
+import { FullTrackName, ObjectForwardingPreference } from 'moqtail'
 
 // Create and populate cache with file chunks
 const fileCache = new MemoryObjectCache()
@@ -198,7 +198,7 @@ for (let i = 0; i < fileChunks.length; i++) {
 }
 
 // Create static content source with cache
-const contentSource = new StaticContentSource(fileCache)
+const contentSource = new StaticTrackSource(fileCache)
 
 // Create track for on-demand delivery
 const fileTrack: Track = {
@@ -214,16 +214,13 @@ client.addOrUpdateTrack(fileTrack)
 ### Hybrid Content
 
 ```typescript
-import { HybridContentSource, RingBufferObjectCache } from '@moqtail/moqtail-ts'
+import { HybridTrackSource, RingBufferObjectCache } from 'moqtail'
 
 // Create cache for recent historical data
 const recentCache = new RingBufferObjectCache(300) // Last 10 seconds at 30fps
 
 // Hybrid source supports both live streaming and historical fetch
-const hybridSource = new HybridContentSource({
-  liveStream: videoObjectStream,
-  cache: recentCache,
-})
+const hybridSource = new HybridTrackSource(videoObjectStream, recentCache)
 
 // Live objects are automatically added to cache
 // Subscribers can fetch recent history or subscribe to live stream
@@ -279,13 +276,13 @@ Complete example of a VOD system using object cache:
 import {
   MOQtailClient,
   MemoryObjectCache,
-  StaticContentSource,
+  StaticTrackSource,
   Track,
   FullTrackName,
   ObjectForwardingPreference,
   MoqtObject,
   ObjectStatus,
-} from '@moqtail/moqtail-ts'
+} from 'moqtail'
 
 async function createVODTrack(videoId: string, segments: Uint8Array[]) {
   // Create cache for VOD content
@@ -324,7 +321,7 @@ async function createVODTrack(videoId: string, segments: Uint8Array[]) {
   vodCache.add(endMarker)
 
   // Create static content source
-  const contentSource = new StaticContentSource(vodCache)
+  const contentSource = new StaticTrackSource(vodCache)
 
   // Create track
   const track: Track = {
@@ -347,7 +344,7 @@ client.addOrUpdateTrack(vodTrack)
 
 <CardGroup cols={2}>
   <Card title="Content Sources" href="/concepts/content-sources">
-    Learn about LiveContentSource, StaticContentSource, and HybridContentSource
+    Learn about LiveTrackSource, StaticTrackSource, and HybridTrackSource
   </Card>
   <Card title="Publishing" href="/publisher/static-content">
     Guide to publishing tracks with object caches
