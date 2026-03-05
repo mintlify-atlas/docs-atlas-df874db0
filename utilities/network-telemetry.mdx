@@ -1,0 +1,504 @@
+---
+title: 'Network Telemetry'
+description: 'Real-time network performance monitoring with sliding window metrics for latency and throughput'
+---
+
+## Overview
+
+The `NetworkTelemetry` class provides real-time monitoring of network performance metrics using a sliding time window. It tracks latency and throughput over time, enabling adaptive streaming decisions and quality-of-service monitoring.
+
+<CardGroup cols={2}>
+  <Card title="Throughput" icon="gauge-high">
+    Measure data transfer rates in bytes per second
+  </Card>
+  <Card title="Latency" icon="clock">
+    Track round-trip times and network delays
+  </Card>
+</CardGroup>
+
+## Installation
+
+```typescript
+import { NetworkTelemetry } from '@moqtail/moqtail-ts'
+```
+
+## Basic Usage
+
+### Initialization
+
+Create a telemetry instance with a sliding window duration:
+
+```typescript
+// Create telemetry with 1-second sliding window (default)
+const telemetry = new NetworkTelemetry(1000)
+
+// Create with custom 5-second window
+const longWindowTelemetry = new NetworkTelemetry(5000)
+
+// Default window is 1000ms
+const defaultTelemetry = new NetworkTelemetry()
+```
+
+### Recording Events
+
+Push network events as they occur:
+
+```typescript
+// Record a network event
+telemetry.push({
+  latency: 50,  // Round-trip time in milliseconds
+  size: 1024,   // Bytes transferred
+})
+
+// Record multiple events
+for (const packet of receivedPackets) {
+  telemetry.push({
+    latency: packet.rtt,
+    size: packet.payload.length,
+  })
+}
+```
+
+### Reading Metrics
+
+```typescript
+// Get current throughput (bytes per second)
+const throughput = telemetry.throughput
+console.log(`Current throughput: ${throughput} bytes/sec`)
+console.log(`Current throughput: ${(throughput / 1024).toFixed(2)} KB/sec`)
+
+// Get average latency (milliseconds)
+const latency = telemetry.latency
+console.log(`Average latency: ${latency.toFixed(2)} ms`)
+```
+
+## Implementation Details
+
+### Sliding Window
+
+The telemetry system uses a sliding time window to calculate metrics:
+
+```typescript
+export class NetworkTelemetry {
+  private events: { timestamp: number; latency: number; size: number }[] = []
+  private windowMs: number
+
+  constructor(windowMs = 1000) {
+    this.windowMs = windowMs
+  }
+
+  push({ latency, size }: { latency: number; size: number }) {
+    const now = Date.now()
+    this.events.push({ timestamp: now, latency, size })
+  }
+
+  private clean() {
+    const cutoff = Date.now() - this.windowMs
+    while (this.events.length && this.events[0] && this.events[0].timestamp < cutoff) {
+      this.events.shift()
+    }
+  }
+
+  get throughput() {
+    this.clean()
+    const totalBytes = this.events.reduce((sum, e) => sum + e.size, 0)
+    return totalBytes / (this.windowMs / 1000) // bytes per second
+  }
+
+  get latency() {
+    this.clean()
+    if (!this.events.length) return 0
+    return this.events.reduce((sum, e) => sum + e.latency, 0) / this.events.length
+  }
+}
+```
+
+### Automatic Cleanup
+
+Events older than the window duration are automatically removed when accessing metrics:
+
+- **On `throughput` access**: Old events are cleaned before calculation
+- **On `latency` access**: Old events are cleaned before calculation
+- **Efficiency**: Only events within the time window contribute to metrics
+
+<Note>
+  The `clean()` method runs automatically when accessing metrics, so you never need to call it manually.
+</Note>
+
+## Adaptive Bitrate Streaming
+
+Use telemetry to implement adaptive bitrate (ABR) algorithms:
+
+```typescript
+import { NetworkTelemetry } from '@moqtail/moqtail-ts'
+
+class AdaptiveBitrateController {
+  private telemetry: NetworkTelemetry
+  private availableBitrates = [500_000, 1_000_000, 2_500_000, 5_000_000] // bps
+  private currentBitrate = 1_000_000
+
+  constructor() {
+    // Use 3-second window for stable measurements
+    this.telemetry = new NetworkTelemetry(3000)
+  }
+
+  recordTransfer(latency: number, size: number) {
+    this.telemetry.push({ latency, size })
+  }
+
+  selectBitrate(): number {
+    const throughputBps = this.telemetry.throughput * 8 // bytes/sec to bits/sec
+    const latency = this.telemetry.latency
+
+    // Use 80% of available bandwidth to leave headroom
+    const targetBps = throughputBps * 0.8
+
+    // Penalize high latency
+    const latencyFactor = latency > 100 ? 0.7 : 1.0
+    const adjustedTarget = targetBps * latencyFactor
+
+    // Find highest bitrate that fits
+    let selectedBitrate = this.availableBitrates[0]
+    for (const bitrate of this.availableBitrates) {
+      if (bitrate <= adjustedTarget) {
+        selectedBitrate = bitrate
+      } else {
+        break
+      }
+    }
+
+    // Smooth transitions - don't jump too quickly
+    if (selectedBitrate > this.currentBitrate) {
+      // Step up one level at a time
+      const currentIndex = this.availableBitrates.indexOf(this.currentBitrate)
+      if (currentIndex < this.availableBitrates.length - 1) {
+        selectedBitrate = this.availableBitrates[currentIndex + 1]
+      }
+    }
+
+    this.currentBitrate = selectedBitrate
+    return selectedBitrate
+  }
+
+  logStats() {
+    const throughputMbps = (this.telemetry.throughput * 8 / 1_000_000).toFixed(2)
+    const latency = this.telemetry.latency.toFixed(2)
+    const bitrateKbps = (this.currentBitrate / 1000).toFixed(0)
+
+    console.log(`Throughput: ${throughputMbps} Mbps | Latency: ${latency} ms | Selected: ${bitrateKbps} Kbps`)
+  }
+}
+
+// Usage
+const abrController = new AdaptiveBitrateController()
+
+// Record each received object
+for await (const object of objectStream) {
+  abrController.recordTransfer(
+    object.metadata.rtt,
+    object.payload.length
+  )
+
+  // Periodically adjust quality
+  const selectedBitrate = abrController.selectBitrate()
+  abrController.logStats()
+}
+```
+
+## Network Condition Monitoring
+
+Monitor network conditions and trigger alerts:
+
+```typescript
+class NetworkMonitor {
+  private telemetry: NetworkTelemetry
+  private readonly HIGH_LATENCY_THRESHOLD = 200 // ms
+  private readonly LOW_THROUGHPUT_THRESHOLD = 100_000 // bytes/sec
+
+  constructor() {
+    this.telemetry = new NetworkTelemetry(2000)
+  }
+
+  async monitorConnection(objectStream: ReadableStream<MoqtObject>) {
+    const reader = objectStream.getReader()
+    const startTime = Date.now()
+
+    try {
+      while (true) {
+        const receiveStart = Date.now()
+        const { done, value: object } = await reader.read()
+        if (done) break
+
+        const receiveEnd = Date.now()
+        const latency = receiveEnd - receiveStart
+
+        this.telemetry.push({
+          latency,
+          size: object.payload?.length || 0,
+        })
+
+        // Check for network issues
+        this.checkNetworkHealth()
+      }
+    } finally {
+      reader.releaseLock()
+    }
+  }
+
+  private checkNetworkHealth() {
+    const latency = this.telemetry.latency
+    const throughput = this.telemetry.throughput
+
+    if (latency > this.HIGH_LATENCY_THRESHOLD) {
+      console.warn(`High latency detected: ${latency.toFixed(2)} ms`)
+      this.onHighLatency(latency)
+    }
+
+    if (throughput < this.LOW_THROUGHPUT_THRESHOLD) {
+      console.warn(`Low throughput detected: ${(throughput / 1024).toFixed(2)} KB/sec`)
+      this.onLowThroughput(throughput)
+    }
+  }
+
+  private onHighLatency(latency: number) {
+    // Take corrective action
+    // - Reduce GOP size for faster recovery
+    // - Increase buffer size
+    // - Lower bitrate
+  }
+
+  private onLowThroughput(throughput: number) {
+    // Take corrective action
+    // - Switch to lower quality
+    // - Reduce frame rate
+    // - Enable compression
+  }
+
+  getStats() {
+    return {
+      throughputBps: this.telemetry.throughput * 8,
+      throughputMbps: (this.telemetry.throughput * 8 / 1_000_000).toFixed(2),
+      latencyMs: this.telemetry.latency.toFixed(2),
+      status: this.getNetworkStatus(),
+    }
+  }
+
+  private getNetworkStatus(): 'excellent' | 'good' | 'fair' | 'poor' {
+    const latency = this.telemetry.latency
+    const throughputMbps = this.telemetry.throughput * 8 / 1_000_000
+
+    if (latency < 50 && throughputMbps > 5) return 'excellent'
+    if (latency < 100 && throughputMbps > 2) return 'good'
+    if (latency < 200 && throughputMbps > 1) return 'fair'
+    return 'poor'
+  }
+}
+```
+
+## Real-Time Dashboard
+
+Visualize network metrics in real-time:
+
+```typescript
+class TelemetryDashboard {
+  private telemetry: NetworkTelemetry
+  private updateInterval: number
+
+  constructor(updateIntervalMs = 1000) {
+    this.telemetry = new NetworkTelemetry(5000) // 5-second window
+    this.updateInterval = updateIntervalMs
+  }
+
+  start() {
+    setInterval(() => {
+      this.updateDisplay()
+    }, this.updateInterval)
+  }
+
+  recordEvent(latency: number, size: number) {
+    this.telemetry.push({ latency, size })
+  }
+
+  private updateDisplay() {
+    const throughputMbps = (this.telemetry.throughput * 8 / 1_000_000).toFixed(2)
+    const latency = this.telemetry.latency.toFixed(0)
+
+    // Update UI elements
+    document.getElementById('throughput').textContent = `${throughputMbps} Mbps`
+    document.getElementById('latency').textContent = `${latency} ms`
+
+    // Update quality indicator
+    const quality = this.getQualityIndicator()
+    document.getElementById('quality').textContent = quality
+    document.getElementById('quality').className = `quality-${quality}`
+  }
+
+  private getQualityIndicator(): string {
+    const latency = this.telemetry.latency
+    
+    if (latency === 0) return 'unknown'
+    if (latency < 50) return 'excellent'
+    if (latency < 100) return 'good'
+    if (latency < 200) return 'fair'
+    return 'poor'
+  }
+}
+
+// Usage
+const dashboard = new TelemetryDashboard(500) // Update every 500ms
+dashboard.start()
+
+// Record events as they happen
+for await (const object of objectStream) {
+  dashboard.recordEvent(
+    object.metadata.rtt,
+    object.payload.length
+  )
+}
+```
+
+## Performance Debugging
+
+Use telemetry for performance analysis:
+
+```typescript
+class PerformanceAnalyzer {
+  private telemetry: NetworkTelemetry
+  private samples: number[] = []
+
+  constructor() {
+    this.telemetry = new NetworkTelemetry(10000) // 10-second window
+  }
+
+  async analyzeStream(objectStream: ReadableStream<MoqtObject>) {
+    const reader = objectStream.getReader()
+    let objectCount = 0
+    let totalBytes = 0
+    const startTime = Date.now()
+
+    try {
+      while (true) {
+        const receiveStart = performance.now()
+        const { done, value: object } = await reader.read()
+        if (done) break
+        const receiveEnd = performance.now()
+
+        const latency = receiveEnd - receiveStart
+        const size = object.payload?.length || 0
+
+        this.telemetry.push({ latency, size })
+        this.samples.push(latency)
+
+        objectCount++
+        totalBytes += size
+
+        // Log every 100 objects
+        if (objectCount % 100 === 0) {
+          this.logAnalytics(objectCount, totalBytes, startTime)
+        }
+      }
+    } finally {
+      reader.releaseLock()
+      this.printSummary(objectCount, totalBytes, startTime)
+    }
+  }
+
+  private logAnalytics(objectCount: number, totalBytes: number, startTime: number) {
+    const elapsedSec = (Date.now() - startTime) / 1000
+    const avgThroughput = (totalBytes / elapsedSec / 1024).toFixed(2)
+    const currentThroughput = (this.telemetry.throughput / 1024).toFixed(2)
+    const avgLatency = this.telemetry.latency.toFixed(2)
+
+    console.log(
+      `Objects: ${objectCount} | ` +
+      `Avg throughput: ${avgThroughput} KB/s | ` +
+      `Current throughput: ${currentThroughput} KB/s | ` +
+      `Avg latency: ${avgLatency} ms`
+    )
+  }
+
+  private printSummary(objectCount: number, totalBytes: number, startTime: number) {
+    const elapsedSec = (Date.now() - startTime) / 1000
+    
+    // Calculate percentiles
+    this.samples.sort((a, b) => a - b)
+    const p50 = this.samples[Math.floor(this.samples.length * 0.5)]
+    const p95 = this.samples[Math.floor(this.samples.length * 0.95)]
+    const p99 = this.samples[Math.floor(this.samples.length * 0.99)]
+
+    console.log('\n=== Performance Summary ===')
+    console.log(`Total objects: ${objectCount}`)
+    console.log(`Total data: ${(totalBytes / 1024 / 1024).toFixed(2)} MB`)
+    console.log(`Duration: ${elapsedSec.toFixed(2)}s`)
+    console.log(`Average throughput: ${(totalBytes / elapsedSec / 1024).toFixed(2)} KB/s`)
+    console.log(`Latency p50: ${p50.toFixed(2)} ms`)
+    console.log(`Latency p95: ${p95.toFixed(2)} ms`)
+    console.log(`Latency p99: ${p99.toFixed(2)} ms`)
+  }
+}
+```
+
+## API Reference
+
+### Constructor
+
+<ParamField path="windowMs" type="number" default="1000">
+  Duration of the sliding window in milliseconds. Events older than this duration are automatically excluded from metric calculations.
+</ParamField>
+
+### Methods
+
+<ParamField path="push" type="(event: NetworkEvent) => void">
+  Record a network event with latency and size.
+
+  **Parameters:**
+  - `event.latency` (number): Round-trip time in milliseconds
+  - `event.size` (number): Bytes transferred
+</ParamField>
+
+### Properties
+
+<ParamField path="throughput" type="number" readonly>
+  Current throughput in bytes per second, calculated over the sliding window.
+  
+  Returns `0` if no events are in the window.
+</ParamField>
+
+<ParamField path="latency" type="number" readonly>
+  Average latency in milliseconds, calculated over the sliding window.
+  
+  Returns `0` if no events are in the window.
+</ParamField>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Choose appropriate window size">
+    - **Short windows (1-2s)**: Fast reaction to network changes, more volatile
+    - **Long windows (5-10s)**: Smoother metrics, slower to react
+    - **Adaptive streaming**: Use 2-5 second windows for balance
+  </Accordion>
+
+  <Accordion title="Record all network events">
+    Push every received object to get accurate metrics. Missing events will skew calculations.
+  </Accordion>
+
+  <Accordion title="Combine with quality adaptation">
+    Use telemetry to drive ABR decisions, but combine with buffer status and other factors for best results.
+  </Accordion>
+
+  <Accordion title="Monitor for edge cases">
+    Handle zero values gracefully - empty windows return 0 for both metrics.
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Playout Buffer" href="/subscriber/playout-buffer">
+    Consumer-driven buffering with latency management
+  </Card>
+  <Card title="Clock Sync" href="/utilities/clock-sync">
+    Network time synchronization utilities
+  </Card>
+</CardGroup>

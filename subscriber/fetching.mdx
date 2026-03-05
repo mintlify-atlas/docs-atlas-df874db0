@@ -1,0 +1,436 @@
+---
+title: 'Fetching Historical Content'
+description: 'Learn how to fetch historical or on-demand content from MOQtail publishers'
+---
+
+## Overview
+
+The `fetch()` method enables you to retrieve bounded ranges of historical objects from publishers. Unlike subscribe operations that stream live content, fetch operations provide reliable, ordered delivery of static content.
+
+<Note>
+Fetch operations are optimized for reliable delivery of historical data. For live streaming content, use the [subscribe](/subscriber/subscribing) method instead.
+</Note>
+
+## Fetch Characteristics
+
+Fetch operations have distinct characteristics compared to subscriptions:
+
+<CardGroup cols={2}>
+  <Card title="Single Stream" icon="arrow-right">
+    All requested objects delivered sequentially in one stream
+  </Card>
+  <Card title="Reliable Delivery" icon="shield-check">
+    Uses QUIC streams for guaranteed, ordered delivery
+  </Card>
+  <Card title="No Cancellation" icon="ban">
+    All requested objects are delivered (historical data)
+  </Card>
+  <Card title="Bounded Range" icon="brackets-square">
+    Fetch a specific range with defined start and end
+  </Card>
+</CardGroup>
+
+## Fetch Types
+
+MOQtail supports three types of fetch operations:
+
+### StandAlone Fetch
+
+Retrieve a historical slice of a track independent of any subscriptions:
+
+```typescript
+import { FetchType, GroupOrder, Location } from 'moqtail';
+
+const result = await client.fetch({
+  priority: 64,
+  groupOrder: GroupOrder.Original,
+  typeAndProps: {
+    type: FetchType.StandAlone,
+    props: {
+      fullTrackName: FullTrackName.tryNew('archive/recordings', 'video'),
+      startLocation: new Location(0n, 0n), // Group 0, Object 0
+      endLocation: new Location(100n, 0n) // Through Group 100
+    }
+  }
+});
+```
+
+<Note>
+This is the most common fetch type for accessing historical content like archived recordings or cached data.
+</Note>
+
+### Relative Fetch
+
+Fetch objects relative to an existing subscription's current position:
+
+```typescript
+// First, create a subscription
+const subResult = await client.subscribe({
+  fullTrackName,
+  filterType: FilterType.LatestObject,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 0
+});
+
+if (!(subResult instanceof SubscribeError)) {
+  // Fetch the last 5 groups relative to the subscription
+  const fetchResult = await client.fetch({
+    priority: 32,
+    groupOrder: GroupOrder.Original,
+    typeAndProps: {
+      type: FetchType.Relative,
+      props: {
+        joiningRequestId: subResult.requestId,
+        joiningStart: 5n // Fetch 5 groups back from current
+      }
+    }
+  });
+}
+```
+
+<Warning>
+Relative fetch requires an active subscription. The `joiningRequestId` must reference a valid SUBSCRIBE request.
+</Warning>
+
+### Absolute Fetch
+
+Fetch using absolute group/object offsets tied to an existing subscription:
+
+```typescript
+const fetchResult = await client.fetch({
+  priority: 32,
+  groupOrder: GroupOrder.Original,
+  typeAndProps: {
+    type: FetchType.Absolute,
+    props: {
+      joiningRequestId: subResult.requestId,
+      joiningStart: 0n // Absolute offset from subscription anchor
+    }
+  }
+});
+```
+
+## Basic Fetch Workflow
+
+<Steps>
+
+<Step title="Configure fetch parameters">
+Define what content you want to retrieve:
+
+```typescript
+import { FetchType, GroupOrder, Location, FetchError } from 'moqtail';
+
+const result = await client.fetch({
+  priority: 64, // 0 (highest) to 255 (lowest)
+  groupOrder: GroupOrder.Original,
+  typeAndProps: {
+    type: FetchType.StandAlone,
+    props: {
+      fullTrackName: FullTrackName.tryNew('recordings', 'session-1'),
+      startLocation: new Location(0n, 0n),
+      endLocation: new Location(50n, 0n)
+    }
+  }
+});
+```
+</Step>
+
+<Step title="Handle fetch response">
+Check if the fetch was successful:
+
+```typescript
+if (result instanceof FetchError) {
+  console.error(`Fetch failed: ${result.reasonPhrase.phrase}`);
+  
+  switch (result.errorCode) {
+    case FetchErrorCode.InvalidRange:
+      console.error('The requested range is invalid');
+      break;
+    case FetchErrorCode.Timeout:
+      console.error('Fetch request timed out');
+      break;
+    default:
+      console.error(`Error code: ${result.errorCode}`);
+  }
+  return;
+}
+
+const { requestId, stream } = result;
+console.log(`Fetch started with ID: ${requestId}`);
+```
+</Step>
+
+<Step title="Process fetched objects">
+Consume objects from the stream:
+
+```typescript
+const reader = stream.getReader();
+
+try {
+  while (true) {
+    const { done, value: object } = await reader.read();
+    if (done) {
+      console.log('Fetch complete');
+      break;
+    }
+
+    // Process the fetched object
+    if (object.objectStatus === ObjectStatus.Normal && object.payload) {
+      await processArchivedData(object);
+    }
+  }
+} finally {
+  reader.releaseLock();
+}
+```
+</Step>
+
+</Steps>
+
+## Priority Management
+
+Priority determines how fetch requests compete for bandwidth:
+
+```typescript
+// High priority fetch for important historical data
+const criticalFetch = await client.fetch({
+  priority: 0, // Highest priority
+  groupOrder: GroupOrder.Original,
+  typeAndProps: {
+    type: FetchType.StandAlone,
+    props: { fullTrackName, startLocation, endLocation }
+  }
+});
+
+// Lower priority background fetch
+const backgroundFetch = await client.fetch({
+  priority: 200, // Lower priority
+  groupOrder: GroupOrder.Original,
+  typeAndProps: {
+    type: FetchType.StandAlone,
+    props: { fullTrackName, startLocation, endLocation }
+  }
+});
+```
+
+<Note>
+Priority must be in the range [0-255], where 0 is the highest priority and 255 is the lowest.
+</Note>
+
+## Group Ordering
+
+Control the order in which groups are delivered:
+
+### Original Order
+
+Deliver groups in the same order they were published:
+
+```typescript
+import { GroupOrder } from 'moqtail';
+
+const result = await client.fetch({
+  priority: 64,
+  groupOrder: GroupOrder.Original, // Preserve publisher order
+  typeAndProps: { /* ... */ }
+});
+```
+
+### Ascending Order
+
+Deliver groups in ascending order by group ID:
+
+```typescript
+const result = await client.fetch({
+  priority: 64,
+  groupOrder: GroupOrder.Ascending, // Smallest group ID first
+  typeAndProps: { /* ... */ }
+});
+```
+
+### Descending Order
+
+Deliver groups in descending order (most recent first):
+
+```typescript
+const result = await client.fetch({
+  priority: 64,
+  groupOrder: GroupOrder.Descending, // Largest group ID first
+  typeAndProps: { /* ... */ }
+});
+```
+
+## Complete Example
+
+Here's a complete example fetching archived video content:
+
+```typescript
+import { 
+  MOQtailClient, 
+  FetchType, 
+  GroupOrder, 
+  Location,
+  FetchError,
+  ObjectStatus 
+} from 'moqtail';
+
+async function fetchArchivedRecording() {
+  // Initialize client
+  const client = await MOQtailClient.new({
+    url: 'https://relay.example.com/transport',
+    supportedVersions: [0xff00000b]
+  });
+
+  // Define the range to fetch
+  const startLocation = new Location(0n, 0n);
+  const endLocation = new Location(100n, 0n);
+
+  // Fetch historical content
+  const result = await client.fetch({
+    priority: 64,
+    groupOrder: GroupOrder.Original,
+    typeAndProps: {
+      type: FetchType.StandAlone,
+      props: {
+        fullTrackName: FullTrackName.tryNew('archive/2024', 'recording-1'),
+        startLocation,
+        endLocation
+      }
+    }
+  });
+
+  // Handle errors
+  if (result instanceof FetchError) {
+    console.error(`Fetch failed: ${result.reasonPhrase.phrase}`);
+    return;
+  }
+
+  const { requestId, stream } = result;
+  console.log(`Fetching with ID: ${requestId}`);
+
+  // Process the stream
+  const reader = stream.getReader();
+  const objects: MoqtObject[] = [];
+
+  try {
+    while (true) {
+      const { done, value: object } = await reader.read();
+      if (done) break;
+
+      if (object.objectStatus === ObjectStatus.Normal && object.payload) {
+        objects.push(object);
+        console.log(
+          `Fetched object ${object.objectId} from group ${object.groupId} ` +
+          `(${object.payload.byteLength} bytes)`
+        );
+      }
+    }
+
+    console.log(`Fetch complete: ${objects.length} objects retrieved`);
+    return objects;
+  } finally {
+    reader.releaseLock();
+  }
+}
+```
+
+## Combining Fetch and Subscribe
+
+A common pattern is fetching historical context while subscribing to live content:
+
+```typescript
+async function subscribeWithHistory() {
+  const client = await MOQtailClient.new({ /* ... */ });
+
+  // Subscribe to live content
+  const subResult = await client.subscribe({
+    fullTrackName,
+    filterType: FilterType.LatestObject,
+    forward: true,
+    groupOrder: GroupOrder.Original,
+    priority: 0
+  });
+
+  if (subResult instanceof SubscribeError) {
+    console.error('Subscription failed');
+    return;
+  }
+
+  // Fetch recent history (last 10 groups) relative to subscription
+  const fetchResult = await client.fetch({
+    priority: 32,
+    groupOrder: GroupOrder.Original,
+    typeAndProps: {
+      type: FetchType.Relative,
+      props: {
+        joiningRequestId: subResult.requestId,
+        joiningStart: 10n // Last 10 groups
+      }
+    }
+  });
+
+  if (!(fetchResult instanceof FetchError)) {
+    // Process historical objects first
+    const historyReader = fetchResult.stream.getReader();
+    while (true) {
+      const { done, value } = await historyReader.read();
+      if (done) break;
+      processHistoricalObject(value);
+    }
+    historyReader.releaseLock();
+  }
+
+  // Then process live stream
+  const liveReader = subResult.stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await liveReader.read();
+      if (done) break;
+      processLiveObject(value);
+    }
+  } finally {
+    liveReader.releaseLock();
+  }
+}
+```
+
+## Error Handling
+
+Handle common fetch errors appropriately:
+
+```typescript
+import { FetchErrorCode } from 'moqtail';
+
+if (result instanceof FetchError) {
+  switch (result.errorCode) {
+    case FetchErrorCode.InvalidRange:
+      console.error('Invalid range specified');
+      // Adjust range and retry
+      break;
+      
+    case FetchErrorCode.Timeout:
+      console.error('Request timed out');
+      // Retry with exponential backoff
+      break;
+      
+    case FetchErrorCode.InternalError:
+      console.error('Server error:', result.reasonPhrase.phrase);
+      // Log and alert
+      break;
+      
+    default:
+      console.error(`Fetch error ${result.errorCode}: ${result.reasonPhrase.phrase}`);
+  }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Subscribing to Live Content" icon="rss" href="/subscriber/subscribing">
+    Learn about live streaming subscriptions
+  </Card>
+  <Card title="Playout Buffer" icon="buffer" href="/subscriber/playout-buffer">
+    Implement smooth media playback
+  </Card>
+</CardGroup>

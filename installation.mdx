@@ -1,0 +1,287 @@
+---
+title: Installation
+description: Install and configure Moqtail in your project
+---
+
+## Package Installation
+
+Moqtail is available as an npm package. Install it using your preferred package manager:
+
+<CodeGroup>
+```bash npm
+npm install moqtail
+```
+
+```bash yarn
+yarn add moqtail
+```
+
+```bash pnpm
+pnpm add moqtail
+```
+
+```bash bun
+bun add moqtail
+```
+</CodeGroup>
+
+## Package Information
+
+<Info>
+**Package Name**: `moqtail`  
+**Current Version**: `0.9.0`  
+**License**: Apache-2.0  
+**Homepage**: [https://moqtail.dev](https://moqtail.dev)  
+**Repository**: [github.com/moqtail/moqtail](https://github.com/moqtail/moqtail)
+</Info>
+
+## Prerequisites
+
+Before installing Moqtail, ensure your development environment meets these requirements:
+
+<Steps>
+  <Step title="Node.js">
+    Node.js version 18 or higher is recommended for optimal compatibility.
+    
+    ```bash
+    node --version
+    # Should output v18.0.0 or higher
+    ```
+  </Step>
+  
+  <Step title="WebTransport Support">
+    Your target browsers must support WebTransport. Check compatibility at [caniuse.com/webtransport](https://caniuse.com/webtransport).
+    
+    Supported browsers:
+    - Chrome 97+
+    - Edge 97+
+    - Opera 83+
+  </Step>
+  
+  <Step title="HTTPS/TLS Certificate">
+    For local development with a relay server, you'll need to trust a local CA certificate. See the relay server documentation for details.
+  </Step>
+</Steps>
+
+## Import Paths
+
+Moqtail provides multiple entry points for different parts of the library:
+
+### Main Entry Point
+
+Import everything from the main entry point:
+
+```typescript
+import { MOQtailClient, FullTrackName, MoqtObject } from 'moqtail'
+```
+
+### Subpath Imports
+
+For more granular imports, use subpath exports:
+
+<CodeGroup>
+```typescript Client
+// Import client types and classes
+import { MOQtailClient } from 'moqtail/client'
+```
+
+```typescript Model
+// Import protocol models and types
+import {
+  FullTrackName,
+  MoqtObject,
+  FilterType,
+  GroupOrder,
+  Location
+} from 'moqtail/model'
+```
+
+```typescript Utilities
+// Import utility classes
+import {
+  NetworkTelemetry,
+  ClockNormalizer
+} from 'moqtail/util'
+```
+</CodeGroup>
+
+## TypeScript Configuration
+
+Moqtail is built with TypeScript and includes full type definitions. The package exports both ESM and CommonJS formats:
+
+```json package.json
+{
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts"
+}
+```
+
+### Recommended tsconfig.json
+
+For optimal TypeScript support:
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  }
+}
+```
+
+## Build Tools Configuration
+
+### Vite
+
+Moqtail works seamlessly with Vite:
+
+```typescript vite.config.ts
+import { defineConfig } from 'vite'
+
+export default defineConfig({
+  // No special configuration needed
+  server: {
+    // For local development with relay
+    https: true
+  }
+})
+```
+
+### Webpack
+
+For Webpack users:
+
+```javascript webpack.config.js
+module.exports = {
+  resolve: {
+    extensions: ['.ts', '.js']
+  },
+  module: {
+    rules: [
+      {
+        test: /\.ts$/,
+        use: 'ts-loader',
+        exclude: /node_modules/
+      }
+    ]
+  }
+}
+```
+
+## Verify Installation
+
+Create a simple test file to verify your installation:
+
+```typescript test.ts
+import { MOQtailClient } from 'moqtail'
+
+console.log('Moqtail imported successfully!')
+console.log('MOQtailClient:', MOQtailClient)
+```
+
+Run it with:
+
+<CodeGroup>
+```bash Node.js
+node --loader ts-node/esm test.ts
+```
+
+```bash tsx
+tsx test.ts
+```
+
+```bash Vite
+vite-node test.ts
+```
+</CodeGroup>
+
+You should see output confirming the import was successful.
+
+## Setting Up a Local Relay (Optional)
+
+For development, you may want to run a local MOQT relay server. The Moqtail repository includes a Rust-based relay:
+
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone https://github.com/moqtail/moqtail.git
+    cd moqtail
+    ```
+  </Step>
+  
+  <Step title="Install Rust">
+    Install Rust from [rustup.rs](https://rustup.rs/) if not already installed.
+  </Step>
+  
+  <Step title="Generate TLS Certificates">
+    ```bash
+    cd apps/relay/cert
+    # Follow instructions in README.md
+    ```
+  </Step>
+  
+  <Step title="Run the Relay">
+    ```bash
+    cargo run --bin relay -- \
+      --port 4433 \
+      --cert-file cert/cert.pem \
+      --key-file cert/key.pem
+    ```
+  </Step>
+  
+  <Step title="Trust the Certificate">
+    Import and trust the generated CA certificate in your browser/system.
+  </Step>
+</Steps>
+
+<Note>
+  The relay server is required for testing publisher and subscriber interactions. Without it, you can still import and work with Moqtail's types and utilities.
+</Note>
+
+## Troubleshooting
+
+### Common Issues
+
+<AccordionGroup>
+  <Accordion title="Module not found error">
+    Ensure you've run the install command and that `node_modules` contains the `moqtail` directory.
+    
+    ```bash
+    ls node_modules/moqtail
+    ```
+  </Accordion>
+  
+  <Accordion title="WebTransport is not defined">
+    This error occurs when running in environments without WebTransport support (Node.js, older browsers).
+    
+    **Solution**: WebTransport is a browser-only API. Moqtail must run in a WebTransport-compatible browser or use a polyfill for testing.
+  </Accordion>
+  
+  <Accordion title="TypeScript type errors">
+    Make sure your `tsconfig.json` includes `"lib": ["DOM", "ES2020"]` to enable WebTransport types.
+  </Accordion>
+  
+  <Accordion title="Certificate trust issues">
+    For local development, you must trust the relay's CA certificate. Follow the instructions in `apps/relay/cert/README.md`.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Build your first MOQT application
+  </Card>
+  
+  <Card title="API Reference" icon="book" href="/api/moqtail-client">
+    Explore the complete API documentation
+  </Card>
+</CardGroup>

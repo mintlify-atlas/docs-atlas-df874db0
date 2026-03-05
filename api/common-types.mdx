@@ -1,0 +1,415 @@
+---
+title: "Common Types"
+description: "Shared types and data structures used throughout the Moqtail SDK"
+---
+
+## Overview
+
+This page documents the common types, enumerations, and data structures used across the Moqtail SDK. These types are fundamental building blocks for MOQT protocol messages and operations.
+
+## Location
+
+Represents a position in a MOQT track, consisting of a group and object index.
+
+```typescript
+class Location {
+  constructor(
+    public readonly group: bigint,
+    public readonly object: bigint
+  )
+  
+  serialize(): FrozenByteBuffer
+  static deserialize(buf: BaseByteBuffer): Location
+  equals(other: Location): boolean
+  compare(other: Location): number
+}
+```
+
+### Properties
+
+<ParamField path="group" type="bigint" required>
+  The group index. Groups typically represent logical segments like GOPs (Group of Pictures) in video or time intervals.
+</ParamField>
+
+<ParamField path="object" type="bigint" required>
+  The object index within the group. Objects are individual data units like video frames or audio samples.
+</ParamField>
+
+### Methods
+
+<ResponseField name="serialize" type="() => FrozenByteBuffer">
+  Serializes the location to a byte buffer
+</ResponseField>
+
+<ResponseField name="deserialize" type="(buf: BaseByteBuffer) => Location">
+  Deserializes a location from a byte buffer
+</ResponseField>
+
+<ResponseField name="equals" type="(other: Location) => boolean">
+  Checks if two locations are identical
+</ResponseField>
+
+<ResponseField name="compare" type="(other: Location) => number">
+  Compares two locations for ordering. Returns -1 if this < other, 1 if this > other, 0 if equal.
+</ResponseField>
+
+### Example
+
+```typescript
+import { Location } from 'moqtail'
+
+// Create a location
+const loc = new Location(42n, 7n)  // Group 42, Object 7
+
+// Compare locations
+const loc1 = new Location(10n, 5n)
+const loc2 = new Location(10n, 10n)
+const loc3 = new Location(20n, 0n)
+
+if (loc1.compare(loc2) < 0) {
+  console.log('loc1 comes before loc2')
+}
+```
+
+---
+
+## KeyValuePair
+
+Represents a protocol parameter as a type-value pair. The type determines whether the value is a varint or binary blob.
+
+```typescript
+class KeyValuePair {
+  constructor(
+    public readonly typeValue: bigint,
+    public readonly value: bigint | Uint8Array
+  )
+  
+  static tryNewVarInt(typeValue: bigint | number, value: bigint | number): KeyValuePair
+  static tryNewBytes(typeValue: bigint | number, value: Uint8Array): KeyValuePair
+  
+  serialize(): FrozenByteBuffer
+  static deserialize(buf: BaseByteBuffer): KeyValuePair
+  equals(other: KeyValuePair): boolean
+}
+```
+
+### Type Convention
+
+- **Even typeValue:** Value is a varint (`bigint`)
+- **Odd typeValue:** Value is a binary blob (`Uint8Array`), max 65535 bytes
+
+### Static Factory Methods
+
+<ResponseField name="tryNewVarInt" type="(typeValue, value) => KeyValuePair">
+  Creates a varint parameter. TypeValue must be even.
+  
+  **Throws:** `KeyValueFormattingError` if typeValue is odd
+</ResponseField>
+
+<ResponseField name="tryNewBytes" type="(typeValue, value) => KeyValuePair">
+  Creates a binary parameter. TypeValue must be odd.
+  
+  **Throws:** `KeyValueFormattingError` if typeValue is even or value exceeds 65535 bytes
+</ResponseField>
+
+### Example
+
+```typescript
+import { KeyValuePair } from 'moqtail'
+
+// VarInt parameter (type 0 = even)
+const priority = KeyValuePair.tryNewVarInt(0, 128)
+
+// Bytes parameter (type 1 = odd)
+const token = KeyValuePair.tryNewBytes(1, new TextEncoder().encode('auth-token'))
+
+// Custom parameters
+const params = [
+  KeyValuePair.tryNewVarInt(10, 5000),  // Bitrate: 5000
+  KeyValuePair.tryNewBytes(11, metadata) // Metadata blob
+]
+```
+
+### Helper Functions
+
+```typescript
+function isVarInt(pair: KeyValuePair): pair is KeyValuePair & { value: bigint }
+function isBytes(pair: KeyValuePair): pair is KeyValuePair & { value: Uint8Array }
+```
+
+```typescript
+const param = KeyValuePair.tryNewVarInt(0, 42)
+
+if (isVarInt(param)) {
+  console.log(`VarInt value: ${param.value}`)
+} else if (isBytes(param)) {
+  console.log(`Bytes length: ${param.value.length}`)
+}
+```
+
+---
+
+## Tuple
+
+Represents a hierarchical sequence of fields, typically used for namespaces and paths.
+
+```typescript
+class Tuple {
+  constructor(public readonly fields: TupleField[] = [])
+  
+  static fromUtf8Path(path: string): Tuple
+  toUtf8Path(): string
+  
+  add(field: TupleField): void
+  get(index: number): TupleField
+  set(index: number, field: TupleField): void
+  clear(): void
+  
+  serialize(): FrozenByteBuffer
+  static deserialize(buf: BaseByteBuffer): Tuple
+  equals(other: Tuple): boolean
+}
+```
+
+### Static Methods
+
+<ResponseField name="fromUtf8Path" type="(path: string) => Tuple">
+  Creates a tuple from a slash-separated path. Empty segments are filtered out.
+</ResponseField>
+
+### Instance Methods
+
+<ResponseField name="toUtf8Path" type="() => string">
+  Converts the tuple to a slash-separated path string
+</ResponseField>
+
+### Example
+
+```typescript
+import { Tuple, TupleField } from 'moqtail'
+
+// From path string
+const namespace = Tuple.fromUtf8Path('video/livestream/channel42')
+console.log(namespace.toUtf8Path())  // "/video/livestream/channel42"
+
+// Manual construction
+const tuple = new Tuple()
+tuple.add(TupleField.fromUtf8('audio'))
+tuple.add(TupleField.fromUtf8('podcast'))
+tuple.add(TupleField.fromUtf8('episode1'))
+
+console.log(tuple.toUtf8Path())  // "/audio/podcast/episode1"
+```
+
+---
+
+## TupleField
+
+Represents a single field in a tuple, storing a value as UTF-8 encoded bytes.
+
+```typescript
+class TupleField {
+  constructor(public readonly value: Uint8Array)
+  
+  static fromUtf8(str: string): TupleField
+  toUtf8(): string
+  
+  serialize(): Uint8Array
+  static deserialize(buf: BaseByteBuffer): TupleField
+}
+```
+
+### Example
+
+```typescript
+import { TupleField } from 'moqtail'
+
+const field = TupleField.fromUtf8('myfield')
+console.log(field.toUtf8())  // "myfield"
+
+// Access raw bytes
+const bytes = field.value  // Uint8Array
+```
+
+---
+
+## FullTrackName
+
+Fully-qualified track identifier consisting of a namespace tuple and track name.
+
+```typescript
+class FullTrackName {
+  constructor(
+    public readonly namespace: Tuple,
+    public readonly name: Uint8Array
+  )
+  
+  static tryNew(namespace: string | Tuple, name: string | Uint8Array): FullTrackName
+  
+  toString(): string
+  serialize(): FrozenByteBuffer
+  static deserialize(buf: BaseByteBuffer): FullTrackName
+}
+```
+
+### Constraints
+
+- Namespace must contain 1-32 fields
+- Total serialized length must not exceed 4096 bytes
+
+### Example
+
+```typescript
+import { FullTrackName, Tuple } from 'moqtail'
+
+// From strings
+const track1 = FullTrackName.tryNew('video/conference/room1', 'camera-alice')
+console.log(track1.toString())  // "video/conference/room1:63616d6572612d616c696365"
+
+// From Tuple and bytes
+const ns = Tuple.fromUtf8Path('audio/music')
+const name = new TextEncoder().encode('track1')
+const track2 = FullTrackName.tryNew(ns, name)
+```
+
+---
+
+## ReasonPhrase
+
+A short UTF-8 string used for error or status reporting, with a maximum length of 1024 bytes.
+
+```typescript
+class ReasonPhrase {
+  constructor(phrase: string)
+  
+  get phrase(): string
+  
+  serialize(): FrozenByteBuffer
+  static deserialize(buf: BaseByteBuffer): ReasonPhrase
+}
+```
+
+### Example
+
+```typescript
+import { ReasonPhrase } from 'moqtail'
+
+const reason = new ReasonPhrase('Track not found')
+console.log(reason.phrase)  // "Track not found"
+```
+
+---
+
+## Enumerations
+
+### FilterType
+
+Specifies which objects to receive in a subscription.
+
+```typescript
+enum FilterType {
+  NextGroupStart = 0x1,   // Start from next available group
+  LatestObject = 0x2,     // Start from latest object
+  AbsoluteStart = 0x3,    // Start from absolute location
+  AbsoluteRange = 0x4,    // Request specific range
+}
+```
+
+### FetchType
+
+Specifies the mode for a fetch request.
+
+```typescript
+enum FetchType {
+  StandAlone = 0x1,  // Fetch independently
+  Relative = 0x2,    // Relative to subscription
+  Absolute = 0x3,    // Absolute position in subscription
+}
+```
+
+### GroupOrder
+
+Specifies the order for group delivery.
+
+```typescript
+enum GroupOrder {
+  Original = 0x0,    // Original order
+  Ascending = 0x1,   // Ascending by group ID
+  Descending = 0x2,  // Descending by group ID
+}
+```
+
+### ControlMessageType
+
+Identifies the type of control message.
+
+```typescript
+enum ControlMessageType {
+  ClientSetup = 0x20,
+  ServerSetup = 0x21,
+  Subscribe = 0x03,
+  SubscribeOk = 0x04,
+  SubscribeError = 0x05,
+  Fetch = 0x16,
+  FetchOk = 0x18,
+  FetchError = 0x19,
+  TrackStatus = 0x0d,
+  PublishNamespace = 0x06,
+  PublishNamespaceOk = 0x07,
+  PublishNamespaceError = 0x08,
+  // ... and more
+}
+```
+
+---
+
+## Utility Types
+
+### ByteBuffer
+
+Mutable buffer for constructing serialized messages.
+
+```typescript
+class ByteBuffer {
+  constructor(initialCapacity?: number)
+  
+  putVI(value: bigint | number): void
+  putU8(value: number): void
+  putU16(value: number): void
+  putBytes(bytes: Uint8Array): void
+  putLocation(loc: Location): void
+  putTuple(tuple: Tuple): void
+  putKeyValuePair(pair: KeyValuePair): void
+  
+  toUint8Array(): Uint8Array
+  freeze(): FrozenByteBuffer
+}
+```
+
+### FrozenByteBuffer
+
+Immutable buffer for reading serialized messages.
+
+```typescript
+class FrozenByteBuffer {
+  get remaining(): number
+  
+  getVI(): bigint
+  getU8(): number
+  getU16(): number
+  getBytes(length: number): Uint8Array
+  getLocation(): Location
+  getTuple(): Tuple
+  getKeyValuePair(): KeyValuePair
+  
+  toUint8Array(): Uint8Array
+}
+```
+
+---
+
+## See Also
+
+- [Error Codes](/api/error-codes) - Protocol error codes and status values
+- [Subscribe](/api/subscribe) - Using these types in subscriptions
+- [Fetch](/api/fetch) - Using these types in fetch requests

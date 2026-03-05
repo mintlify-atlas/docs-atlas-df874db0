@@ -1,0 +1,466 @@
+---
+title: 'Track Discovery'
+description: 'Discover available tracks and namespaces using MOQtail announcement system'
+---
+
+## Overview
+
+MOQtail provides a track discovery mechanism that allows subscribers to learn about available content without prior knowledge of track names. Publishers announce their namespaces, and subscribers can listen for these announcements to discover what content is available.
+
+<Note>
+Track discovery is essential for building dynamic applications where the available content changes over time, such as live conference systems or multi-user broadcasting platforms.
+</Note>
+
+## Discovery Workflow
+
+The discovery process involves two sides:
+
+<CardGroup cols={2}>
+  <Card title="Publisher Side" icon="megaphone">
+    Publishers announce namespaces using `publishNamespace()` to make tracks discoverable
+  </Card>
+  <Card title="Subscriber Side" icon="satellite-dish">
+    Subscribers use `subscribeNamespace()` to receive announcements for specific namespace prefixes
+  </Card>
+</CardGroup>
+
+## Subscribing to Announcements
+
+<Steps>
+
+<Step title="Initialize the client">
+Create a MOQtail client connection:
+
+```typescript
+import { MOQtailClient, Tuple } from 'moqtail';
+
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com/transport',
+  supportedVersions: [0xff00000b]
+});
+```
+</Step>
+
+<Step title="Set up announcement handlers">
+Register callbacks to receive announcements:
+
+```typescript
+// Called when a namespace is announced
+client.onNamespacePublished = (msg) => {
+  console.log('New namespace announced:', msg.trackNamespacePrefix.toPath());
+  
+  // The namespace is now available
+  handleNewNamespace(msg.trackNamespacePrefix);
+};
+
+// Called when a namespace is no longer available
+client.onNamespaceDone = (msg) => {
+  console.log('Namespace ended:', msg.trackNamespace.toPath());
+  
+  // Clean up any subscriptions to this namespace
+  handleNamespaceRemoval(msg.trackNamespace);
+};
+```
+</Step>
+
+<Step title="Subscribe to namespace prefix">
+Subscribe to receive announcements for a specific prefix:
+
+```typescript
+import { SubscribeNamespace } from 'moqtail';
+
+// Subscribe to all announcements under 'live/'
+const subscribeNamespace = new SubscribeNamespace(
+  client.allocatePseudoRequestId(),
+  Tuple.fromUtf8Path('live'),
+  [] // No additional parameters
+);
+
+await client.subscribeNamespace(subscribeNamespace);
+
+console.log('Subscribed to announcements for "live/" prefix');
+```
+</Step>
+
+</Steps>
+
+## Namespace Structure
+
+Namespaces are hierarchical tuples that organize tracks:
+
+### Tuple Format
+
+```typescript
+import { Tuple } from 'moqtail';
+
+// Create from slash-separated path
+const namespace = Tuple.fromUtf8Path('live/conference/room-1');
+
+// Create from array of components
+const namespace2 = Tuple.tryNew(['live', 'conference', 'room-1']);
+
+// Convert back to path
+console.log(namespace.toPath()); // "live/conference/room-1"
+```
+
+### Prefix Matching
+
+Subscribing to a prefix matches all namespaces that start with that prefix:
+
+```typescript
+// Subscribe to 'live/' prefix
+await client.subscribeNamespace(new SubscribeNamespace(
+  requestId,
+  Tuple.fromUtf8Path('live'),
+  []
+));
+
+// Will receive announcements for:
+// - live/conference
+// - live/conference/room-1
+// - live/sports/game-1
+// - etc.
+```
+
+<Note>
+Empty tuple `Tuple.tryNew([])` matches all namespaces, essentially subscribing to all announcements.
+</Note>
+
+## Complete Discovery Example
+
+Here's a complete example implementing track discovery:
+
+```typescript
+import { 
+  MOQtailClient,
+  Tuple,
+  SubscribeNamespace,
+  PublishNamespace,
+  PublishNamespaceDone,
+  FilterType,
+  GroupOrder
+} from 'moqtail';
+
+class TrackDiscovery {
+  private client: MOQtailClient;
+  private availableNamespaces: Set<string> = new Set();
+
+  constructor(client: MOQtailClient) {
+    this.client = client;
+    this.setupHandlers();
+  }
+
+  private setupHandlers() {
+    // Handle new namespace announcements
+    this.client.onNamespacePublished = (msg: PublishNamespace) => {
+      const namespacePath = msg.trackNamespacePrefix.toPath();
+      console.log(`📢 Namespace announced: ${namespacePath}`);
+      
+      this.availableNamespaces.add(namespacePath);
+      this.onNamespaceDiscovered(namespacePath);
+    };
+
+    // Handle namespace removal
+    this.client.onNamespaceDone = (msg: PublishNamespaceDone) => {
+      const namespacePath = msg.trackNamespace.toPath();
+      console.log(`📭 Namespace ended: ${namespacePath}`);
+      
+      this.availableNamespaces.delete(namespacePath);
+      this.onNamespaceRemoved(namespacePath);
+    };
+  }
+
+  async subscribeToAnnouncements(prefix: string) {
+    const subscribeMsg = new SubscribeNamespace(
+      this.client.allocatePseudoRequestId(),
+      Tuple.fromUtf8Path(prefix),
+      []
+    );
+
+    await this.client.subscribeNamespace(subscribeMsg);
+    console.log(`Subscribed to announcements for "${prefix}"`);
+  }
+
+  async unsubscribeFromAnnouncements(prefix: string) {
+    const unsubscribeMsg = new UnsubscribeNamespace(
+      Tuple.fromUtf8Path(prefix)
+    );
+
+    await this.client.unsubscribeNamespace(unsubscribeMsg);
+    console.log(`Unsubscribed from announcements for "${prefix}"`);
+  }
+
+  private async onNamespaceDiscovered(namespace: string) {
+    // Example: Auto-subscribe to discovered tracks
+    console.log(`Discovering tracks in namespace: ${namespace}`);
+    
+    // You might query track status or automatically subscribe
+    // For example, subscribe to a 'video' track if it exists
+    const videoTrack = FullTrackName.tryNew(namespace, 'video');
+    
+    const result = await this.client.subscribe({
+      fullTrackName: videoTrack,
+      filterType: FilterType.LatestObject,
+      forward: true,
+      groupOrder: GroupOrder.Original,
+      priority: 0
+    });
+
+    if (!(result instanceof SubscribeError)) {
+      console.log(`✅ Subscribed to ${namespace}/video`);
+    }
+  }
+
+  private onNamespaceRemoved(namespace: string) {
+    // Clean up subscriptions related to this namespace
+    console.log(`Cleaning up subscriptions for ${namespace}`);
+    // Implementation depends on your subscription tracking
+  }
+
+  getAvailableNamespaces(): string[] {
+    return Array.from(this.availableNamespaces);
+  }
+}
+
+// Usage
+async function main() {
+  const client = await MOQtailClient.new({
+    url: 'https://relay.example.com/transport',
+    supportedVersions: [0xff00000b]
+  });
+
+  const discovery = new TrackDiscovery(client);
+  
+  // Subscribe to all "live/" announcements
+  await discovery.subscribeToAnnouncements('live');
+  
+  // Subscribe to all "archive/" announcements
+  await discovery.subscribeToAnnouncements('archive');
+
+  // List available namespaces after some time
+  setTimeout(() => {
+    console.log('Available namespaces:', discovery.getAvailableNamespaces());
+  }, 5000);
+}
+```
+
+## Track Status Queries
+
+Once you discover a namespace, query specific track status:
+
+```typescript
+import { TrackStatusMessage } from 'moqtail';
+
+// Query status of a specific track
+const trackStatus = new TrackStatusMessage(
+  client.allocatePseudoRequestId(),
+  FullTrackName.tryNew('live/conference', 'video')
+);
+
+const result = await client.trackStatus(trackStatus);
+
+if (result instanceof TrackStatusError) {
+  console.error(`Track status request failed: ${result.reasonPhrase.phrase}`);
+} else {
+  console.log('Track status:', {
+    statusCode: result.statusCode,
+    lastGroup: result.lastGroup,
+    lastObject: result.lastObject
+  });
+}
+```
+
+<Note>
+Track status queries tell you the latest available content position, useful for determining where to start a subscription.
+</Note>
+
+## Publisher Announcement
+
+Publishers announce their namespaces to make them discoverable:
+
+```typescript
+import { PublishNamespace, PublishNamespaceError } from 'moqtail';
+
+// Announce a namespace
+const announce = new PublishNamespace(
+  client.allocatePseudoRequestId(),
+  Tuple.fromUtf8Path('live/conference')
+);
+
+const result = await client.publishNamespace(announce);
+
+if (result instanceof PublishNamespaceError) {
+  console.error(`Publishing namespace failed: ${result.reasonPhrase.phrase}`);
+} else {
+  console.log('Namespace announced successfully');
+}
+```
+
+### Stopping Announcements
+
+When a publisher stops serving content:
+
+```typescript
+import { PublishNamespaceDone } from 'moqtail';
+
+const announceDone = new PublishNamespaceDone(
+  Tuple.fromUtf8Path('live/conference')
+);
+
+await client.publishNamespaceDone(announceDone);
+console.log('Namespace announcement stopped');
+```
+
+## Multi-Prefix Discovery
+
+Subscribe to multiple namespace prefixes simultaneously:
+
+```typescript
+class MultiPrefixDiscovery {
+  private client: MOQtailClient;
+  private subscribedPrefixes: Map<string, bigint> = new Map();
+
+  constructor(client: MOQtailClient) {
+    this.client = client;
+  }
+
+  async addPrefix(prefix: string) {
+    if (this.subscribedPrefixes.has(prefix)) {
+      console.log(`Already subscribed to ${prefix}`);
+      return;
+    }
+
+    const requestId = this.client.allocatePseudoRequestId();
+    const subscribeMsg = new SubscribeNamespace(
+      requestId,
+      Tuple.fromUtf8Path(prefix),
+      []
+    );
+
+    await this.client.subscribeNamespace(subscribeMsg);
+    this.subscribedPrefixes.set(prefix, requestId);
+    console.log(`✅ Subscribed to ${prefix}`);
+  }
+
+  async removePrefix(prefix: string) {
+    if (!this.subscribedPrefixes.has(prefix)) {
+      console.log(`Not subscribed to ${prefix}`);
+      return;
+    }
+
+    const unsubscribeMsg = new UnsubscribeNamespace(
+      Tuple.fromUtf8Path(prefix)
+    );
+
+    await this.client.unsubscribeNamespace(unsubscribeMsg);
+    this.subscribedPrefixes.delete(prefix);
+    console.log(`❌ Unsubscribed from ${prefix}`);
+  }
+
+  getSubscribedPrefixes(): string[] {
+    return Array.from(this.subscribedPrefixes.keys());
+  }
+}
+
+// Usage
+const discovery = new MultiPrefixDiscovery(client);
+await discovery.addPrefix('live');
+await discovery.addPrefix('archive');
+await discovery.addPrefix('recordings');
+
+console.log('Monitoring prefixes:', discovery.getSubscribedPrefixes());
+```
+
+## Dynamic Track Lists
+
+Build a dynamic UI that updates as tracks become available:
+
+```typescript
+class DynamicTrackList {
+  private discovery: TrackDiscovery;
+  private tracks: Map<string, TrackInfo> = new Map();
+
+  constructor(discovery: TrackDiscovery) {
+    this.discovery = discovery;
+  }
+
+  async discoverTracks(namespace: string) {
+    // Common track names to probe
+    const commonTrackNames = ['video', 'audio', 'metadata', 'data'];
+    
+    for (const trackName of commonTrackNames) {
+      const fullTrackName = FullTrackName.tryNew(namespace, trackName);
+      const statusMsg = new TrackStatusMessage(
+        this.discovery.client.allocatePseudoRequestId(),
+        fullTrackName
+      );
+
+      const result = await this.discovery.client.trackStatus(statusMsg);
+      
+      if (!(result instanceof TrackStatusError)) {
+        // Track exists
+        this.tracks.set(`${namespace}/${trackName}`, {
+          namespace,
+          trackName,
+          lastGroup: result.lastGroup,
+          lastObject: result.lastObject
+        });
+        
+        console.log(`Found track: ${namespace}/${trackName}`);
+      }
+    }
+  }
+
+  getAvailableTracks(): TrackInfo[] {
+    return Array.from(this.tracks.values());
+  }
+
+  renderTrackList() {
+    const tracks = this.getAvailableTracks();
+    
+    return tracks.map(track => ({
+      id: `${track.namespace}/${track.trackName}`,
+      label: `${track.namespace}/${track.trackName}`,
+      position: `Group ${track.lastGroup}, Object ${track.lastObject}`
+    }));
+  }
+}
+
+interface TrackInfo {
+  namespace: string;
+  trackName: string;
+  lastGroup: bigint | null;
+  lastObject: bigint | null;
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Subscribe to broad prefixes">
+    Start with broad prefixes like `"live"` or `"archive"` to catch all announcements, then filter client-side based on your application needs.
+  </Accordion>
+  
+  <Accordion title="Handle announcement delays">
+    Announcements may arrive with some delay. Implement retry logic when attempting to subscribe to newly announced tracks.
+  </Accordion>
+  
+  <Accordion title="Clean up on namespace removal">
+    When receiving a `PublishNamespaceDone` message, properly clean up any active subscriptions to tracks in that namespace.
+  </Accordion>
+  
+  <Accordion title="Cache discovered namespaces">
+    Maintain a local cache of discovered namespaces to provide immediate feedback in your UI while waiting for announcements.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Subscribing" icon="rss" href="/subscriber/subscribing">
+    Learn how to subscribe to discovered tracks
+  </Card>
+  <Card title="Publisher Guide" icon="tower-broadcast" href="/publisher/overview">
+    Understand the publisher side of announcements
+  </Card>
+</CardGroup>

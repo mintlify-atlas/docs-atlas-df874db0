@@ -1,0 +1,280 @@
+---
+title: "Fetch"
+description: "Fetch specific objects from a track without subscribing"
+---
+
+## Overview
+
+The `Fetch` class represents a MOQT Fetch control message. It allows clients to request a specific range of objects from a track without establishing a long-lived subscription. Fetch supports three modes: standalone, relative (to an existing subscription), and absolute (to an existing subscription).
+
+## Class Definition
+
+```typescript
+class Fetch {
+  constructor(
+    public readonly requestId: bigint,
+    public readonly subscriberPriority: number,
+    public readonly groupOrder: GroupOrder,
+    public readonly typeAndProps:
+      | {
+          readonly type: FetchType.StandAlone
+          readonly props: { 
+            fullTrackName: FullTrackName
+            startLocation: Location
+            endLocation: Location 
+          }
+        }
+      | {
+          readonly type: FetchType.Relative
+          readonly props: { 
+            joiningRequestId: bigint
+            joiningStart: bigint 
+          }
+        }
+      | {
+          readonly type: FetchType.Absolute
+          readonly props: { 
+            joiningRequestId: bigint
+            joiningStart: bigint 
+          }
+        },
+    public readonly parameters: KeyValuePair[],
+  )
+}
+```
+
+## Properties
+
+<ParamField path="requestId" type="bigint" required>
+  Unique identifier for this fetch request.
+</ParamField>
+
+<ParamField path="subscriberPriority" type="number" required>
+  Priority value (0-255) for this fetch request. Higher priority requests are processed first.
+</ParamField>
+
+<ParamField path="groupOrder" type="GroupOrder" required>
+  Specifies the order in which groups should be delivered:
+  - `GroupOrder.Original` (0x0): Original order
+  - `GroupOrder.Ascending` (0x1): Ascending order
+  - `GroupOrder.Descending` (0x2): Descending order
+</ParamField>
+
+<ParamField path="typeAndProps" type="object" required>
+  Discriminated union defining the fetch type and its associated properties.
+</ParamField>
+
+<ParamField path="parameters" type="KeyValuePair[]" required>
+  Additional protocol parameters for the fetch request.
+</ParamField>
+
+## Fetch Types
+
+### StandAlone Fetch
+
+Fetches objects from a track independently of any subscription.
+
+<Expandable title="StandAlone Properties">
+  <ResponseField name="fullTrackName" type="FullTrackName" required>
+    The track to fetch from
+  </ResponseField>
+  
+  <ResponseField name="startLocation" type="Location" required>
+    The group and object location to start fetching from
+  </ResponseField>
+  
+  <ResponseField name="endLocation" type="Location" required>
+    The group and object location to stop fetching at (inclusive)
+  </ResponseField>
+</Expandable>
+
+### Relative Fetch
+
+Fetches objects relative to the current position of an existing subscription.
+
+<Expandable title="Relative Properties">
+  <ResponseField name="joiningRequestId" type="bigint" required>
+    The request ID of the subscription to join
+  </ResponseField>
+  
+  <ResponseField name="joiningStart" type="bigint" required>
+    Relative group offset from the subscription's current position
+  </ResponseField>
+</Expandable>
+
+### Absolute Fetch
+
+Fetches objects starting at an absolute location relative to an existing subscription.
+
+<Expandable title="Absolute Properties">
+  <ResponseField name="joiningRequestId" type="bigint" required>
+    The request ID of the subscription to join
+  </ResponseField>
+  
+  <ResponseField name="joiningStart" type="bigint" required>
+    Absolute group number to start fetching from
+  </ResponseField>
+</Expandable>
+
+## Methods
+
+### getType
+
+Returns the control message type identifier.
+
+```typescript
+getType(): ControlMessageType
+```
+
+**Returns:** `ControlMessageType.Fetch`
+
+### serialize
+
+Serializes the Fetch message to a frozen byte buffer for transmission.
+
+```typescript
+serialize(): FrozenByteBuffer
+```
+
+**Returns:** `FrozenByteBuffer` containing the serialized message
+
+**Throws:** `LengthExceedsMaxError` if the payload exceeds 65535 bytes
+
+### parsePayload
+
+Deserializes a Fetch message from a byte buffer.
+
+```typescript
+static parsePayload(buf: BaseByteBuffer): Fetch
+```
+
+<ParamField path="buf" type="BaseByteBuffer" required>
+  Buffer containing the serialized Fetch message payload
+</ParamField>
+
+**Returns:** Deserialized `Fetch` instance
+
+**Throws:**
+- `NotEnoughBytesError` if the buffer doesn't contain enough data
+- `CastingError` if invalid fetch type or group order values are encountered
+- `Error` if the fetch type is unknown
+
+## Usage Examples
+
+### Standalone Fetch
+
+Fetch a specific range of objects from a track.
+
+```typescript
+import { Fetch, FetchType, FullTrackName, Location, GroupOrder } from 'moqtail'
+
+const fetch = new Fetch(
+  161803n,
+  15,
+  GroupOrder.Descending,
+  {
+    type: FetchType.StandAlone,
+    props: {
+      fullTrackName: FullTrackName.tryNew('video/vod', 'episode1'),
+      startLocation: new Location(0n, 0n),
+      endLocation: new Location(10n, 99n),
+    }
+  },
+  []
+)
+
+const serialized = fetch.serialize()
+// Send serialized message to server
+```
+
+### Relative Fetch
+
+Fetch objects relative to an existing subscription's position.
+
+```typescript
+import { Fetch, FetchType, GroupOrder, KeyValuePair } from 'moqtail'
+
+const fetch = new Fetch(
+  99999n,
+  10,
+  GroupOrder.Original,
+  {
+    type: FetchType.Relative,
+    props: {
+      joiningRequestId: 12345n,  // Existing subscription
+      joiningStart: 5n,           // Fetch 5 groups ahead
+    }
+  },
+  [KeyValuePair.tryNewVarInt(0, 1)]
+)
+```
+
+### Absolute Fetch
+
+Fetch objects from an absolute position, joining an existing subscription.
+
+```typescript
+import { Fetch, FetchType } from 'moqtail'
+
+const fetch = new Fetch(
+  77777n,
+  20,
+  GroupOrder.Ascending,
+  {
+    type: FetchType.Absolute,
+    props: {
+      joiningRequestId: 12345n,  // Existing subscription
+      joiningStart: 100n,         // Start at group 100
+    }
+  },
+  []
+)
+```
+
+### Parse Incoming Fetch
+
+```typescript
+import { Fetch, ByteBuffer, FetchType } from 'moqtail'
+
+const buf = new ByteBuffer()
+buf.putBytes(incomingData)
+
+// Skip message type and read payload length
+const msgType = buf.getVI()
+const msgLength = buf.getU16()
+
+const fetch = Fetch.parsePayload(buf.freeze())
+
+if (fetch.typeAndProps.type === FetchType.StandAlone) {
+  console.log(`Fetch from: ${fetch.typeAndProps.props.fullTrackName.toString()}`)
+  console.log(`Range: ${fetch.typeAndProps.props.startLocation.group} to ${fetch.typeAndProps.props.endLocation.group}`)
+} else {
+  console.log(`Joining request: ${fetch.typeAndProps.props.joiningRequestId}`)
+}
+```
+
+## Fetch vs Subscribe
+
+| Feature | Fetch | Subscribe |
+|---------|-------|----------|
+| **Duration** | One-time request | Long-lived stream |
+| **Use Case** | Historical data, specific segments | Live streaming, ongoing updates |
+| **Range** | Fixed start and end | Open-ended or filtered |
+| **Server Resources** | Temporary | Persistent |
+
+<Note>
+  Use `Fetch` for on-demand content retrieval and `Subscribe` for continuous streaming scenarios.
+</Note>
+
+## Related Types
+
+- [FetchType](/api/common-types#fetchtype) - Fetch mode enumeration
+- [FullTrackName](/api/common-types#fulltrackname) - Track identifier
+- [Location](/api/common-types#location) - Group and object position
+- [GroupOrder](/api/common-types#grouporder) - Group delivery order
+- [KeyValuePair](/api/common-types#keyvaluepair) - Protocol parameters
+
+## See Also
+
+- [Subscribe](/api/subscribe) - Subscribe to tracks for streaming
+- [TrackStatus](/api/track-status) - Query track availability

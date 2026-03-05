@@ -1,0 +1,419 @@
+---
+title: 'Tracks and Objects'
+description: 'Understanding the fundamental data structures in MOQT'
+---
+
+## Overview
+
+In MOQT, content is organized into **tracks** (media streams) and **objects** (individual data units). This hierarchical structure enables efficient streaming, caching, and retrieval of media content.
+
+## Tracks
+
+A track represents a logical media stream with a unique identifier and delivery characteristics.
+
+### Track Structure
+
+```typescript
+export type Track = {
+  /** Globally unique identifier for the track */
+  fullTrackName: FullTrackName
+  
+  /** Hint controlling which objects should be forwarded/prioritized */
+  forwardingPreference: ObjectForwardingPreference
+  
+  /** Accessors for live and/or past objects */
+  trackSource: TrackSource
+  
+  /** Priority 0 (highest) to 255 (lowest) advertised with objects */
+  publisherPriority: number
+  
+  /** Optional compact numeric alias for protocol efficiency */
+  trackAlias?: bigint
+}
+```
+
+<Info>
+Tracks are the primary unit of organization in MOQT. Each track has a unique name and can contain both live and historical content.
+</Info>
+
+### Track Names
+
+Track names consist of a hierarchical namespace and a leaf name:
+
+```typescript
+export class FullTrackName {
+  public readonly namespace: Tuple   // Hierarchical path segments
+  public readonly name: Uint8Array   // Leaf identifier
+
+  static tryNew(namespace: string | Tuple, name: string | Uint8Array): FullTrackName
+}
+```
+
+**Creating track names:**
+
+```typescript
+// Video track in a conference
+const videoTrack = FullTrackName.tryNew('live/conference/room-42', 'video')
+
+// Audio track
+const audioTrack = FullTrackName.tryNew('live/conference/room-42', 'audio')
+
+// VOD content
+const vodTrack = FullTrackName.tryNew('vod/movies/action', 'example-movie.mp4')
+
+console.log(videoTrack.toString())
+// Output: "live/conference/room-42:766964656f"
+```
+
+<Accordion title="Track naming best practices">
+  **Namespace hierarchy:**
+  - Use `/` separators for logical grouping
+  - Start with content type (`live`, `vod`, `data`)
+  - Include context (`conference`, `channel`, `user`)
+  - Keep depth reasonable (3-5 levels)
+
+  **Track names:**
+  - Use descriptive names (`video`, `audio`, `chat`)
+  - Include quality indicators if needed (`video-hd`, `audio-opus`)
+  - Keep names concise (under 32 bytes recommended)
+</Accordion>
+
+### Forwarding Preferences
+
+Tracks specify how objects should be delivered:
+
+```typescript
+export enum ObjectForwardingPreference {
+  Subgroup = 'Subgroup',  // Ordered, reliable delivery via streams
+  Datagram = 'Datagram',  // Unordered, low-latency via datagrams
+}
+```
+
+**Example track configurations:**
+
+```typescript
+// Live video track (reliable delivery)
+const liveVideo: Track = {
+  fullTrackName: FullTrackName.tryNew('live/stream', 'video'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { live: videoStream },
+  publisherPriority: 0
+}
+
+// Low-latency audio track (datagram delivery)
+const liveAudio: Track = {
+  fullTrackName: FullTrackName.tryNew('live/stream', 'audio'),
+  forwardingPreference: ObjectForwardingPreference.Datagram,
+  trackSource: { live: audioStream },
+  publisherPriority: 8
+}
+
+// VOD track (cached content)
+const vodTrack: Track = {
+  fullTrackName: FullTrackName.tryNew('vod/content', 'movie'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { past: cache },
+  publisherPriority: 64
+}
+```
+
+### Track Aliases
+
+For wire efficiency, tracks can use numeric aliases instead of full names:
+
+```typescript
+// Full track name on first reference
+const track: Track = {
+  fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+  trackAlias: 1n,  // Compact alias for subsequent references
+  // ...
+}
+
+// Objects reference track by alias (saves bandwidth)
+const datagram = DatagramObject.new(
+  1n,        // trackAlias instead of full name
+  100n,      // groupId
+  5n,        // objectId
+  128,       // publisherPriority
+  null,      // extensionHeaders
+  payload,   // object data
+  false      // endOfGroup
+)
+```
+
+## Objects
+
+Objects are the atomic units of data within tracks.
+
+### Object Structure
+
+```typescript
+export class MoqtObject {
+  public readonly location: Location           // Position in track
+  public readonly subgroupId: bigint | null    // Subgroup identifier
+  public readonly fullTrackName: FullTrackName
+  public readonly publisherPriority: number
+  public readonly objectForwardingPreference: ObjectForwardingPreference
+  public readonly objectStatus: ObjectStatus
+  public readonly extensionHeaders: KeyValuePair[] | null
+  public readonly payload: Uint8Array | null
+
+  get groupId(): bigint { return this.location.group }
+  get objectId(): bigint { return this.location.object }
+}
+```
+
+### Creating Objects
+
+**Object with payload (normal data):**
+
+```typescript
+const payload = new TextEncoder().encode('video frame data')
+const location = new Location(100n, 5n)  // Group 100, Object 5
+
+const obj = MoqtObject.newWithPayload(
+  fullTrackName,
+  location,
+  128,                                    // publisherPriority
+  ObjectForwardingPreference.Subgroup,
+  0n,                                     // subgroupId
+  null,                                   // extensionHeaders
+  payload
+)
+```
+
+**Object with status (no payload):**
+
+```typescript
+const statusObj = MoqtObject.newWithStatus(
+  fullTrackName,
+  new Location(100n, 10n),
+  128,
+  ObjectForwardingPreference.Subgroup,
+  0n,
+  null,
+  ObjectStatus.EndOfGroup  // Marks end of group 100
+)
+```
+
+### Object Locations
+
+Locations uniquely identify objects within a track:
+
+```typescript
+export class Location {
+  public readonly group: bigint   // Group index (e.g., GOP, segment)
+  public readonly object: bigint  // Object index within group
+
+  compare(other: Location): number {
+    // Returns -1, 0, or 1 for ordering
+  }
+
+  equals(other: Location): boolean {
+    return this.group === other.group && this.object === other.object
+  }
+}
+```
+
+**Location examples:**
+
+```typescript
+// First frame of first GOP
+const keyframe = new Location(0n, 0n)
+
+// Fifth frame of third GOP
+const frame = new Location(2n, 4n)
+
+// Comparing locations
+if (frame.compare(keyframe) > 0) {
+  console.log('frame comes after keyframe')
+}
+```
+
+<Note>
+Groups typically correspond to natural content boundaries (GOPs, segments, chapters) while objects represent individual units within those boundaries (frames, chunks).
+</Note>
+
+### Object Status
+
+Objects can carry status instead of payload:
+
+```typescript
+export enum ObjectStatus {
+  Normal = 0x0,          // Regular object with payload
+  DoesNotExist = 0x1,    // Object not available
+  EndOfGroup = 0x3,      // Marks group boundary
+  EndOfTrack = 0x4,      // Marks track termination
+}
+```
+
+**Processing objects by status:**
+
+```typescript
+function processObject(obj: MoqtObject) {
+  switch (obj.objectStatus) {
+    case ObjectStatus.Normal:
+      if (obj.payload) {
+        decodeAndRender(obj.payload)
+      }
+      break
+      
+    case ObjectStatus.EndOfGroup:
+      console.log(`Group ${obj.groupId} complete`)
+      finalizeGroup(obj.groupId)
+      break
+      
+    case ObjectStatus.EndOfTrack:
+      console.log('Track ended gracefully')
+      closePlayer()
+      break
+      
+    case ObjectStatus.DoesNotExist:
+      console.warn(`Missing: group ${obj.groupId}, object ${obj.objectId}`)
+      handleMissing(obj.location)
+      break
+  }
+}
+```
+
+### Subgroups
+
+Subgroups provide additional organization within groups:
+
+```typescript
+const obj = MoqtObject.newWithPayload(
+  fullTrackName,
+  new Location(100n, 5n),
+  128,
+  ObjectForwardingPreference.Subgroup,
+  2n,        // subgroupId - for layered video, etc.
+  null,
+  payload
+)
+```
+
+<Accordion title="Subgroup use cases">
+  **Spatial layers (SVC):**
+  - Subgroup 0: Base layer
+  - Subgroup 1: Enhancement layer 1
+  - Subgroup 2: Enhancement layer 2
+
+  **Temporal layers:**
+  - Subgroup 0: Key frames
+  - Subgroup 1: P-frames
+  - Subgroup 2: B-frames
+
+  **Multi-track GOPs:**
+  - Subgroup 0: Video
+  - Subgroup 1: Audio
+  - Subgroup 2: Captions
+</Accordion>
+
+## Extension Headers
+
+Objects can include optional metadata:
+
+```typescript
+import { ExtensionHeaders } from '@/model'
+
+const headers = new ExtensionHeaders()
+  .addCaptureTimestamp(Date.now())
+  .addAudioLevel(85)
+  .build()
+
+const obj = MoqtObject.newWithPayload(
+  fullTrackName,
+  location,
+  128,
+  ObjectForwardingPreference.Subgroup,
+  0n,
+  headers,  // Extension headers attached
+  payload
+)
+```
+
+## Object Conversion
+
+Objects can be converted to wire formats:
+
+### To Datagram
+
+```typescript
+if (obj.objectForwardingPreference === ObjectForwardingPreference.Datagram) {
+  const datagram = obj.tryIntoDatagramObject(
+    trackAlias,
+    false  // endOfGroup flag
+  )
+  // Send datagram over WebTransport
+}
+```
+
+### To Subgroup Object
+
+```typescript
+if (obj.objectForwardingPreference === ObjectForwardingPreference.Subgroup) {
+  const subgroupObj = obj.tryIntoSubgroupObject()
+  // Write to unidirectional stream
+}
+```
+
+### From Wire Formats
+
+```typescript
+// From datagram
+const objFromDatagram = MoqtObject.fromDatagramObject(
+  receivedDatagram,
+  fullTrackName
+)
+
+// From fetch object
+const objFromFetch = MoqtObject.fromFetchObject(
+  receivedFetchObject,
+  fullTrackName
+)
+
+// From subgroup object
+const objFromSubgroup = MoqtObject.fromSubgroupObject(
+  receivedSubgroupObject,
+  groupId,
+  publisherPriority,
+  subgroupId,
+  fullTrackName
+)
+```
+
+## Working with Tracks
+
+Adding tracks to a client:
+
+```typescript
+const client = await MOQtailClient.new(clientOptions)
+
+// Create and add track
+const track: Track = {
+  fullTrackName: FullTrackName.tryNew('live/demo', 'video'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { live: videoStream },
+  publisherPriority: 0
+}
+
+client.addOrUpdateTrack(track)
+
+// Publish namespace to make discoverable
+await client.publishNamespace(
+  new PublishNamespace(
+    client.nextClientRequestId,
+    Tuple.fromUtf8Path('live/demo')
+  )
+)
+```
+
+Removing tracks:
+
+```typescript
+client.removeTrack(track)
+```
+
+<Card title="Next Steps" icon="arrow-right" href="/concepts/publisher-subscriber">
+  Learn how publishers and subscribers interact using tracks and objects
+</Card>

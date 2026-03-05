@@ -1,80 +1,388 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with Moqtail in minutes by building your first subscriber and publisher
 ---
 
-## Get started in three steps
+This guide will help you build a complete working example with both a subscriber and publisher using Moqtail.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, make sure you have:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+- Node.js 18 or later installed
+- A running MOQtail relay server (see [Relay Server Setup](/deployment/relay-server))
+- WebTransport-enabled browser (Chrome/Edge recommended)
+
+## Installation
+
+First, install the Moqtail package:
+
+<CodeGroup>
+```bash npm
+npm install moqtail
+```
+```bash yarn
+yarn add moqtail
+```
+```bash pnpm
+pnpm add moqtail
+```
+</CodeGroup>
+
+## Building a Subscriber
+
+Let's start by creating a subscriber that consumes live video content.
+
+<Steps>
+  <Step title="Establish WebTransport connection">
+    Connect to your relay server using WebTransport:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```typescript
+    const url = 'https://localhost:4433'
+    const webTransport = new WebTransport(url)
+    await webTransport.ready
+    ```
+  </Step>
+  
+  <Step title="Initialize the MOQtail client">
+    Create a client with role configuration:
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    ```typescript
+    import { MOQtailClient, ClientSetup, RoleType } from 'moqtail/client'
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
+    const clientSetup = new ClientSetup(
+      [0],  // Supported versions (Draft 14)
+      new SetupParameters()
+        .withRole(RoleType.Subscriber)
+        .withDeliveryTimeout(5000)
+    )
+    
+    const client = await MOQtailClient.new(clientSetup, webTransport)
+    ```
+  </Step>
+  
+  <Step title="Subscribe to a track">
+    Subscribe to live content and process incoming objects:
+    
+    ```typescript
+    import { Subscribe, FilterType, FullTrackName } from 'moqtail/model'
+    
+    // Subscribe to latest content
+    const subscribe = Subscribe.newLatestObject(
+      client.nextClientRequestId,
+      1n, // trackAlias
+      FullTrackName.tryNew('live/conference', 'video'),
+      1n  // subscriberId
+    )
+    
+    const result = await client.subscribe(subscribe)
+    
+    if (result instanceof SubscribeError) {
+      console.error('Subscription failed:', result.reasonPhrase)
+      return
+    }
+    
+    // Process the stream
+    const reader = result.getReader()
+    while (true) {
+      const { done, value: object } = await reader.read()
+      if (done) break
+      
+      console.log(`Received object ${object.objectId} from group ${object.groupId}`)
+      // Process the media data in object.payload
+      processMediaFrame(object.payload)
+    }
+    ```
+  </Step>
+</Steps>
+
+## Building a Publisher
+
+Now let's create a publisher that produces live video content.
+
+<Steps>
+  <Step title="Connect and initialize">
+    Set up the WebTransport connection and client with publisher role:
+    
+    ```typescript
+    const webTransport = new WebTransport('https://localhost:4433')
+    await webTransport.ready
+    
+    const clientSetup = new ClientSetup(
+      [0],
+      new SetupParameters().withRole(RoleType.Publisher)
+    )
+    
+    const client = await MOQtailClient.new(clientSetup, webTransport)
+    ```
+  </Step>
+  
+  <Step title="Create a content source">
+    Set up a live content source with a stream of objects:
+    
+    ```typescript
+    import { LiveTrackSource, MoqtObject, Location } from 'moqtail'
+    
+    // Create a stream of video frames
+    const frameStream = new ReadableStream({
+      async start(controller) {
+        let groupId = 0n
+        let objectId = 0n
+        
+        // Simulate video encoding (replace with real encoder)
+        const interval = setInterval(() => {
+          const payload = encodeVideoFrame()
+          const object = MoqtObject.newWithPayload(
+            new Location(groupId, objectId),
+            payload,
+            1  // publisherPriority
+          )
+          
+          controller.enqueue(object)
+          objectId++
+          
+          // Start new group every 30 frames (keyframe interval)
+          if (objectId % 30n === 0n) {
+            groupId++
+            objectId = 0n
+          }
+        }, 33) // ~30fps
+        
+        // Cleanup on stream cancellation
+        return () => clearInterval(interval)
+      }
+    })
+    
+    const contentSource = new LiveTrackSource(frameStream)
+    ```
+  </Step>
+  
+  <Step title="Create and register the track">
+    Define your track and add it to the client:
+    
+    ```typescript
+    import { Track, ObjectForwardingPreference } from 'moqtail'
+    
+    const videoTrack: Track = {
+      fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+      trackAlias: 1n,
+      forwardingPreference: ObjectForwardingPreference.Subgroup,
+      contentSource: contentSource
+    }
+    
+    client.addOrUpdateTrack(videoTrack)
+    ```
+  </Step>
+  
+  <Step title="Announce the namespace">
+    Publish your namespace so subscribers can discover your tracks:
+    
+    ```typescript
+    import { PublishNamespace, Tuple } from 'moqtail/model'
+    
+    const announce = new PublishNamespace(
+      client.nextClientRequestId,
+      Tuple.tryNew(['live', 'conference'])
+    )
+    
+    const result = await client.publishNamespace(announce)
+    
+    if (result instanceof PublishNamespaceError) {
+      console.error('Failed to announce:', result.reasonPhrase)
+      return
+    }
+    
+    console.log('Successfully publishing namespace!')
+    ```
+  </Step>
+</Steps>
+
+## Complete Example
+
+Here's a complete working example that combines both patterns:
+
+<Accordion title="Full Subscriber Implementation">
+```typescript
+import { MOQtailClient, ClientSetup, RoleType, SetupParameters } from 'moqtail/client'
+import { Subscribe, FullTrackName, SubscribeError } from 'moqtail/model'
+
+async function createSubscriber() {
+  // Connect to relay
+  const webTransport = new WebTransport('https://localhost:4433')
+  await webTransport.ready
+  
+  // Initialize client
+  const clientSetup = new ClientSetup(
+    [0],
+    new SetupParameters()
+      .withRole(RoleType.Subscriber)
+      .withDeliveryTimeout(5000)
+  )
+  
+  const client = await MOQtailClient.new(clientSetup, webTransport)
+  
+  // Subscribe to latest content
+  const subscribe = Subscribe.newLatestObject(
+    client.nextClientRequestId,
+    1n,
+    FullTrackName.tryNew('live/conference', 'video'),
+    1n
+  )
+  
+  const result = await client.subscribe(subscribe)
+  
+  if (result instanceof SubscribeError) {
+    throw new Error(`Subscription failed: ${result.reasonPhrase}`)
+  }
+  
+  // Process incoming objects
+  const reader = result.getReader()
+  
+  try {
+    while (true) {
+      const { done, value: object } = await reader.read()
+      if (done) break
+      
+      console.log(`Received object ${object.objectId} from group ${object.groupId}`)
+      // Process media data
+      await decodeAndRender(object.payload)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+createSubscriber().catch(console.error)
+```
 </Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<Accordion title="Full Publisher Implementation">
+```typescript
+import { MOQtailClient, ClientSetup, RoleType, SetupParameters } from 'moqtail/client'
+import { 
+  PublishNamespace, 
+  Tuple, 
+  FullTrackName, 
+  PublishNamespaceError 
+} from 'moqtail/model'
+import { 
+  Track, 
+  LiveTrackSource, 
+  MoqtObject, 
+  Location, 
+  ObjectForwardingPreference 
+} from 'moqtail'
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+async function createPublisher() {
+  // Connect to relay
+  const webTransport = new WebTransport('https://localhost:4433')
+  await webTransport.ready
+  
+  // Initialize client
+  const clientSetup = new ClientSetup(
+    [0],
+    new SetupParameters().withRole(RoleType.Publisher)
+  )
+  
+  const client = await MOQtailClient.new(clientSetup, webTransport)
+  
+  // Create live content stream
+  let groupId = 0n
+  let objectId = 0n
+  
+  const frameStream = new ReadableStream({
+    start(controller) {
+      const interval = setInterval(() => {
+        const payload = captureAndEncodeFrame()
+        const object = MoqtObject.newWithPayload(
+          new Location(groupId, objectId),
+          payload,
+          1
+        )
+        
+        controller.enqueue(object)
+        objectId++
+        
+        // New GOP every 30 frames
+        if (objectId % 30n === 0n) {
+          groupId++
+          objectId = 0n
+        }
+      }, 33) // 30fps
+      
+      return () => clearInterval(interval)
+    }
+  })
+  
+  // Create and register track
+  const videoTrack: Track = {
+    fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+    trackAlias: 1n,
+    forwardingPreference: ObjectForwardingPreference.Subgroup,
+    contentSource: new LiveTrackSource(frameStream)
+  }
+  
+  client.addOrUpdateTrack(videoTrack)
+  
+  // Announce namespace
+  const announce = new PublishNamespace(
+    client.nextClientRequestId,
+    Tuple.tryNew(['live', 'conference'])
+  )
+  
+  const result = await client.publishNamespace(announce)
+  
+  if (result instanceof PublishNamespaceError) {
+    throw new Error(`Failed to announce: ${result.reasonPhrase}`)
+  }
+  
+  console.log('Successfully publishing live content!')
+}
 
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
+createPublisher().catch(console.error)
+```
 </Accordion>
 
-## Next steps
-
-Now that you have your docs running, explore these key features:
+## Next Steps
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Core Concepts" icon="book" href="/concepts/moqt-protocol">
+    Understand tracks, objects, and the MOQT protocol
+  </Card>
+  <Card title="Publisher Guide" icon="tower-broadcast" href="/publisher/creating-tracks">
+    Learn advanced publishing patterns
+  </Card>
+  <Card title="Subscriber Guide" icon="rss" href="/subscriber/subscribing">
+    Master subscription and fetching strategies
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/moqtail-client">
+    Explore the complete API documentation
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="WebTransport connection fails">
+    Make sure:
+    - Your relay server is running on the correct port
+    - You have valid TLS certificates (see [WebTransport Setup](/deployment/webtransport-setup))
+    - Your browser trusts the certificates (for development, install the CA)
+    - The browser supports WebTransport (Chrome/Edge 97+)
+  </Accordion>
+  
+  <Accordion title="Subscription returns no data">
+    Check that:
+    - The publisher has announced the namespace
+    - The track name matches exactly (namespace and track name)
+    - The publisher's track is active and generating objects
+    - Network connectivity between client and relay is stable
+  </Accordion>
+  
+  <Accordion title="Objects arrive out of order">
+    This is expected behavior for datagram delivery. To ensure ordering:
+    - Use `ObjectForwardingPreference.Subgroup` for ordered delivery
+    - Implement a playout buffer (see [Playout Buffer](/subscriber/playout-buffer))
+    - Sort objects by their `Location` (groupId, objectId)
+  </Accordion>
+</AccordionGroup>

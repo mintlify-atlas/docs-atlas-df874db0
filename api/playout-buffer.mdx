@@ -1,0 +1,370 @@
+---
+title: "Playout Buffer"
+description: "Buffer management for smooth media playback"
+---
+
+## Overview
+
+The Playout Buffer is a critical component for managing media playback in MOQT applications. While Moqtail doesn't provide a built-in playout buffer implementation (to allow for application-specific customization), this guide covers the concepts and patterns for implementing an effective playout buffer.
+
+## Core Concepts
+
+### Purpose
+
+A playout buffer:
+- Absorbs network jitter and packet reordering
+- Maintains smooth playback despite variable delivery times
+- Handles out-of-order group and object arrival
+- Manages buffer levels to balance latency and smoothness
+
+### Buffer Architecture
+
+```typescript
+interface PlayoutBuffer {
+  // Add received objects to the buffer
+  push(object: MOQTObject): void
+  
+  // Pull next object for playback
+  pull(): MOQTObject | null
+  
+  // Check buffer status
+  level(): number
+  isEmpty(): boolean
+  isFull(): boolean
+  
+  // Buffer management
+  clear(): void
+  setTarget(ms: number): void
+}
+```
+
+## Implementation Patterns
+
+### Basic Buffer Implementation
+
+```typescript
+import { Location } from 'moqtail'
+
+interface BufferedObject {
+  location: Location
+  data: Uint8Array
+  timestamp: number
+}
+
+class SimplePlayoutBuffer {
+  private buffer: Map<string, BufferedObject> = new Map()
+  private targetLatency: number
+  private currentGroup: bigint = 0n
+  private currentObject: bigint = 0n
+  
+  constructor(targetLatencyMs: number = 500) {
+    this.targetLatency = targetLatencyMs
+  }
+  
+  push(location: Location, data: Uint8Array): void {
+    const key = `${location.group}:${location.object}`
+    this.buffer.set(key, {
+      location,
+      data,
+      timestamp: Date.now()
+    })
+  }
+  
+  pull(): BufferedObject | null {
+    const key = `${this.currentGroup}:${this.currentObject}`
+    const obj = this.buffer.get(key)
+    
+    if (!obj) return null
+    
+    // Check if we should wait for more buffering
+    const age = Date.now() - obj.timestamp
+    if (age < this.targetLatency && this.buffer.size < 10) {
+      return null  // Wait for more objects
+    }
+    
+    this.buffer.delete(key)
+    this.currentObject++
+    return obj
+  }
+  
+  level(): number {
+    return this.buffer.size
+  }
+  
+  isEmpty(): boolean {
+    return this.buffer.size === 0
+  }
+  
+  clear(): void {
+    this.buffer.clear()
+  }
+  
+  setTarget(ms: number): void {
+    this.targetLatency = ms
+  }
+}
+```
+
+### Priority Queue Buffer
+
+Handle out-of-order delivery with a priority queue:
+
+```typescript
+import { Location } from 'moqtail'
+
+interface QueuedObject {
+  location: Location
+  data: Uint8Array
+  receivedAt: number
+}
+
+class PriorityPlayoutBuffer {
+  private queue: QueuedObject[] = []
+  private targetLatency: number
+  private lastPlayedLocation?: Location
+  
+  constructor(targetLatencyMs: number = 500) {
+    this.targetLatency = targetLatencyMs
+  }
+  
+  push(location: Location, data: Uint8Array): void {
+    const obj: QueuedObject = {
+      location,
+      data,
+      receivedAt: Date.now()
+    }
+    
+    // Insert in sorted order
+    let index = this.queue.findIndex(item => 
+      this.compareLocations(location, item.location) < 0
+    )
+    
+    if (index === -1) {
+      this.queue.push(obj)
+    } else {
+      this.queue.splice(index, 0, obj)
+    }
+  }
+  
+  pull(): Uint8Array | null {
+    if (this.queue.length === 0) return null
+    
+    const next = this.queue[0]
+    const age = Date.now() - next.receivedAt
+    
+    // Adaptive latency: wait longer if buffer is low
+    const adaptiveLatency = this.queue.length < 5 
+      ? this.targetLatency * 1.5 
+      : this.targetLatency
+    
+    if (age < adaptiveLatency) {
+      return null  // Not ready yet
+    }
+    
+    this.queue.shift()
+    this.lastPlayedLocation = next.location
+    return next.data
+  }
+  
+  private compareLocations(a: Location, b: Location): number {
+    if (a.group !== b.group) {
+      return a.group < b.group ? -1 : 1
+    }
+    return a.object < b.object ? -1 : (a.object > b.object ? 1 : 0)
+  }
+  
+  level(): number {
+    return this.queue.length
+  }
+  
+  healthScore(): number {
+    // 0 = empty, 1 = optimal, > 1 = overfilled
+    const optimalSize = 10
+    return this.queue.length / optimalSize
+  }
+}
+```
+
+### Adaptive Buffer
+
+Automatically adjust target latency based on network conditions:
+
+```typescript
+import { NetworkTelemetry } from 'moqtail/util'
+
+class AdaptivePlayoutBuffer {
+  private buffer: Map<string, BufferedObject> = new Map()
+  private telemetry: NetworkTelemetry
+  private baseLatency: number
+  private currentLatency: number
+  
+  constructor(baseLatencyMs: number = 500) {
+    this.baseLatency = baseLatencyMs
+    this.currentLatency = baseLatencyMs
+    this.telemetry = new NetworkTelemetry(1000)
+  }
+  
+  push(location: Location, data: Uint8Array, stats: { latency: number, size: number }): void {
+    const key = `${location.group}:${location.object}`
+    this.buffer.set(key, {
+      location,
+      data,
+      timestamp: Date.now()
+    })
+    
+    // Update telemetry
+    this.telemetry.push(stats)
+    
+    // Adapt buffer target based on network conditions
+    this.adaptLatency()
+  }
+  
+  private adaptLatency(): void {
+    const avgLatency = this.telemetry.latency
+    const bufferHealth = this.buffer.size
+    
+    // Increase buffer if network is slow
+    if (avgLatency > this.currentLatency * 0.8) {
+      this.currentLatency = Math.min(
+        this.currentLatency * 1.2,
+        this.baseLatency * 3
+      )
+    }
+    
+    // Decrease buffer if network is fast and buffer is full
+    if (avgLatency < this.currentLatency * 0.5 && bufferHealth > 15) {
+      this.currentLatency = Math.max(
+        this.currentLatency * 0.9,
+        this.baseLatency
+      )
+    }
+  }
+  
+  getStats(): { latency: number, throughput: number, bufferLatency: number } {
+    return {
+      latency: this.telemetry.latency,
+      throughput: this.telemetry.throughput,
+      bufferLatency: this.currentLatency
+    }
+  }
+}
+```
+
+## Integration with Subscribe
+
+### Feeding the Buffer
+
+```typescript
+import { Subscribe, Location } from 'moqtail'
+
+const buffer = new PriorityPlayoutBuffer(500)
+const subscription = Subscribe.newLatestObject(
+  requestId,
+  fullTrackName,
+  priority,
+  groupOrder,
+  true,
+  []
+)
+
+// Handle incoming objects
+subscription.onObject((object) => {
+  const location = new Location(object.groupId, object.objectId)
+  buffer.push(location, object.payload)
+})
+
+// Playback loop
+setInterval(() => {
+  const data = buffer.pull()
+  if (data) {
+    playFrame(data)
+  }
+}, 33)  // ~30fps
+```
+
+## Buffer Strategies
+
+### Low-Latency Strategy
+
+```typescript
+const lowLatencyBuffer = new SimplePlayoutBuffer(100)  // 100ms target
+```
+
+Best for:
+- Video conferencing
+- Live interactions
+- Gaming
+
+### Smooth Playback Strategy
+
+```typescript
+const smoothBuffer = new SimplePlayoutBuffer(1000)  // 1s target
+```
+
+Best for:
+- Pre-recorded content
+- Unreliable networks
+- High-quality playback
+
+### Adaptive Strategy
+
+```typescript
+const adaptiveBuffer = new AdaptivePlayoutBuffer(500)  // Start at 500ms
+```
+
+Best for:
+- Variable network conditions
+- Mobile applications
+- Long-duration streams
+
+## Monitoring and Debugging
+
+### Buffer Health Metrics
+
+```typescript
+class BufferMonitor {
+  private buffer: PlayoutBuffer
+  private underrunCount = 0
+  private overrunCount = 0
+  
+  constructor(buffer: PlayoutBuffer) {
+    this.buffer = buffer
+  }
+  
+  check(): BufferHealth {
+    const level = this.buffer.level()
+    
+    if (level === 0) {
+      this.underrunCount++
+      return { status: 'underrun', level, underruns: this.underrunCount }
+    }
+    
+    if (level > 50) {
+      this.overrunCount++
+      return { status: 'overrun', level, overruns: this.overrunCount }
+    }
+    
+    return { status: 'healthy', level }
+  }
+}
+```
+
+## Best Practices
+
+<Tip>
+  Start with a conservative buffer size (500-1000ms) and adjust based on your application's latency requirements.
+</Tip>
+
+<Warning>
+  Monitor buffer underruns and overruns. Frequent underruns indicate network issues or an insufficient buffer. Frequent overruns suggest the buffer is too large.
+</Warning>
+
+<Note>
+  For live content, prioritize low latency. For VOD content, prioritize smooth playback.
+</Note>
+
+## Related Topics
+
+- [Clock Normalizer](/api/clock-normalizer) - Synchronize playback timing
+- [Telemetry](/api/telemetry) - Monitor network performance
+- [Subscribe](/api/subscribe) - Receive streaming objects

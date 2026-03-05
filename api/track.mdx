@@ -1,0 +1,388 @@
+---
+title: 'Track'
+description: 'Media/data track definition for publishing and subscription'
+---
+
+# Track
+
+A `Track` represents a logical media or data stream identified by a unique name and namespace. Tracks can provide live content, historical (cached) content, or both.
+
+## Overview
+
+Tracks are registered with the client via `addOrUpdateTrack()` to make them available for:
+- **Publishing** - Serving live objects to subscribers
+- **Fetching** - Providing historical objects from a cache
+- **Hybrid** - Both live streaming and historical access
+
+## Type Definition
+
+```typescript
+type Track = {
+  fullTrackName: FullTrackName;
+  forwardingPreference: ObjectForwardingPreference;
+  trackSource: TrackSource;
+  publisherPriority: number;
+  trackAlias?: bigint;
+}
+```
+
+## Properties
+
+<ParamField path="fullTrackName" type="FullTrackName" required>
+  Globally unique identifier for the track.
+  
+  Consists of:
+  - **namespace**: Hierarchical tuple (e.g. `['video', 'camera1']`)
+  - **name**: Leaf identifier (string or bytes)
+  
+  Create with:
+  ```typescript
+  const fullTrackName = FullTrackName.tryNew('video/camera1', 'h264');
+  ```
+</ParamField>
+
+<ParamField path="forwardingPreference" type="ObjectForwardingPreference" required>
+  Hint controlling how objects should be delivered:
+  
+  - `ObjectForwardingPreference.Subgroup` - Use reliable ordered subgroups (default for most use cases)
+  - `ObjectForwardingPreference.Datagram` - Use unreliable datagrams for low-latency
+  
+  <Info>
+  This is advisory - the relay may override based on negotiated capabilities.
+  </Info>
+</ParamField>
+
+<ParamField path="trackSource" type="TrackSource" required>
+  Defines where track content comes from. See [TrackSource](/api/content-source) for details.
+  
+  Can provide:
+  - **live**: `ReadableStream<MoqtObject>` for real-time publishing
+  - **past**: `ObjectCache` for historical data retrieval
+  - **both**: Hybrid live + cached content
+  
+  ```typescript
+  // Live only
+  trackSource: { live: liveStream }
+  
+  // Cached only
+  trackSource: { past: cache }
+  
+  // Hybrid
+  trackSource: { past: cache, live: liveStream }
+  ```
+</ParamField>
+
+<ParamField path="publisherPriority" type="number" required>
+  Publisher priority for objects in this track.
+  
+  - **Range**: 0 (highest priority) to 255 (lowest priority)
+  - **Type**: Number (fractional values are rounded, out-of-range values are clamped)
+  
+  Used by relays to prioritize bandwidth allocation across tracks.
+</ParamField>
+
+<ParamField path="trackAlias" type="bigint">
+  Optional compact numeric alias assigned during protocol negotiation.
+  
+  Automatically set by the protocol when a track is subscribed to or published. Do not set manually.
+</ParamField>
+
+---
+
+## Usage Examples
+
+### Live-Only Track
+
+Publish a real-time video stream from getUserMedia:
+
+```typescript
+import { MOQtailClient, ObjectForwardingPreference, FullTrackName } from 'moqtail';
+
+// Get video stream from camera
+const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+const videoTrack = stream.getVideoTracks()[0];
+
+// Convert video frames to MoqtObject stream (application-specific)
+const liveStream: ReadableStream<MoqtObject> = createVideoObjectStream(videoTrack);
+
+// Register track with client
+client.addOrUpdateTrack({
+  fullTrackName: FullTrackName.tryNew('video/camera', 'main'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { live: liveStream },
+  publisherPriority: 0 // Highest priority
+});
+```
+
+### Cached-Only Track
+
+Serve pre-recorded content from a cache:
+
+```typescript
+import { MemoryObjectCache, ObjectForwardingPreference, FullTrackName } from 'moqtail';
+
+// Create and populate cache
+const cache = new MemoryObjectCache();
+recording.forEach(obj => cache.add(obj));
+
+// Register track
+client.addOrUpdateTrack({
+  fullTrackName: FullTrackName.tryNew('video/vod', 'replay'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { past: cache },
+  publisherPriority: 64 // Medium priority
+});
+```
+
+### Hybrid Track (Live + Cache)
+
+Provide both live streaming and catch-up functionality:
+
+```typescript
+import { 
+  MemoryObjectCache, 
+  LiveTrackSource,
+  StaticTrackSource,
+  ObjectForwardingPreference,
+  FullTrackName 
+} from 'moqtail';
+
+const cache = new MemoryObjectCache();
+const liveStream = createLiveStream();
+
+// Cache live objects as they're produced
+liveStream.pipeTo(new WritableStream({
+  write(obj) {
+    cache.add(obj);
+  }
+}));
+
+client.addOrUpdateTrack({
+  fullTrackName: FullTrackName.tryNew('video/main', 'h264'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: {
+    past: new StaticTrackSource(cache),
+    live: new LiveTrackSource(liveStream)
+  },
+  publisherPriority: 8
+});
+```
+
+### Low-Latency Datagram Track
+
+Use datagrams for ultra-low latency streaming:
+
+```typescript
+client.addOrUpdateTrack({
+  fullTrackName: FullTrackName.tryNew('game/state', 'updates'),
+  forwardingPreference: ObjectForwardingPreference.Datagram,
+  trackSource: { live: gameStateStream },
+  publisherPriority: 0
+});
+```
+
+---
+
+## Track Management
+
+### Adding/Updating Tracks
+
+Use `addOrUpdateTrack()` to register or modify a track:
+
+```typescript
+client.addOrUpdateTrack(track);
+```
+
+If a track with the same `fullTrackName` already exists, it will be updated. Otherwise, a new track is registered.
+
+### Removing Tracks
+
+Remove a track from the client's catalog:
+
+```typescript
+client.removeTrack(track);
+```
+
+<Warning>
+Removing a track does **not** automatically:
+- Send `PUBLISH_NAMESPACE_DONE` (call `publishNamespaceDone()` separately)
+- Cancel active subscriptions (they continue until completion)
+- Stop already-sent objects
+</Warning>
+
+### Announcing Tracks
+
+Before publishing, announce the track's namespace:
+
+```typescript
+const fullTrackName = FullTrackName.tryNew('video/camera1', 'h264');
+
+// Announce namespace
+const result = await client.publishNamespace(fullTrackName.namespace);
+
+if (!(result instanceof PublishNamespaceError)) {
+  // Add track for publishing
+  client.addOrUpdateTrack({
+    fullTrackName,
+    forwardingPreference: ObjectForwardingPreference.Subgroup,
+    trackSource: { live: liveStream },
+    publisherPriority: 0
+  });
+}
+```
+
+### Unannouncing Tracks
+
+Signal that a namespace is no longer available:
+
+```typescript
+await client.publishNamespaceDone(track.fullTrackName.namespace);
+client.removeTrack(track);
+```
+
+---
+
+## FullTrackName
+
+The `FullTrackName` class represents a globally unique track identifier.
+
+### Constructor
+
+```typescript
+FullTrackName.tryNew(
+  namespace: string | Tuple,
+  name: string | Uint8Array
+): FullTrackName
+```
+
+<ParamField path="namespace" type="string | Tuple" required>
+  Hierarchical namespace path:
+  - **String**: Slash-separated path (e.g. `'video/camera1'`)
+  - **Tuple**: Array of namespace segments (e.g. `['video', 'camera1']`)
+</ParamField>
+
+<ParamField path="name" type="string | Uint8Array" required>
+  Leaf track name:
+  - **String**: UTF-8 track name (e.g. `'h264'`)
+  - **Uint8Array**: Raw bytes for binary names
+</ParamField>
+
+**Throws:**
+- `TrackNameError` - If namespace is empty, exceeds 32 fields, or total serialized length exceeds 4096 bytes
+
+### Methods
+
+#### `toString()`
+
+Returns human-readable representation:
+
+```typescript
+const ftn = FullTrackName.tryNew('video/camera1', 'h264');
+console.log(ftn.toString());
+// Output: "video/camera1:68323634" (name as hex)
+```
+
+#### `serialize()`
+
+Serializes to wire format:
+
+```typescript
+const bytes: FrozenByteBuffer = fullTrackName.serialize();
+```
+
+#### `deserialize()`
+
+Parses from wire format:
+
+```typescript
+const ftn = FullTrackName.deserialize(buffer);
+```
+
+---
+
+## ObjectForwardingPreference
+
+Enum controlling object delivery mechanism:
+
+```typescript
+enum ObjectForwardingPreference {
+  Subgroup = 'Subgroup',  // Reliable, ordered delivery
+  Datagram = 'Datagram'   // Unreliable, low-latency delivery
+}
+```
+
+### Subgroup (Reliable)
+
+- Uses WebTransport unidirectional streams
+- Guaranteed delivery and ordering within groups
+- Higher latency but no loss
+- **Best for**: Video, audio, critical data
+
+### Datagram (Unreliable)
+
+- Uses WebTransport datagrams
+- Low latency, may experience loss or reordering
+- Requires datagram support enabled
+- **Best for**: Game state, sensor data, disposable updates
+
+<Tip>
+Use `Subgroup` for media content (video/audio) and `Datagram` for ephemeral state updates where low latency matters more than reliability.
+</Tip>
+
+---
+
+## Publisher Priority
+
+The `publisherPriority` field helps relays allocate bandwidth efficiently:
+
+```typescript
+// Priority guidelines
+const priority = {
+  critical: 0,      // Highest - control/metadata tracks
+  high: 32,         // High - main video track
+  medium: 128,      // Medium - secondary tracks, thumbnails
+  low: 192,         // Low - analytics, logs
+  background: 255   // Lowest - best-effort data
+};
+```
+
+### Priority Behavior
+
+- **Lower values** = higher priority = more bandwidth
+- **Range**: 0-255 (fractional values rounded, out-of-range clamped)
+- **Relay decision**: Relays use priority when congestion occurs
+
+<Info>
+Priority is per-track, not per-object. All objects in a track share the same priority.
+</Info>
+
+---
+
+## Best Practices
+
+<Tip>
+**Naming Convention**: Use hierarchical namespaces for organization:
+- `video/camera1/h264` - Camera 1 H.264 stream
+- `video/camera1/thumbnail` - Camera 1 thumbnail
+- `audio/mic1/opus` - Microphone 1 Opus stream
+</Tip>
+
+<Warning>
+**Track Lifecycle**: Always call `publishNamespace()` before adding tracks and `publishNamespaceDone()` when stopping. This ensures proper discovery and cleanup.
+</Warning>
+
+<Info>
+**Caching Strategy**: For hybrid tracks, consider cache size limits:
+```typescript
+const cache = new RingBufferObjectCache(1000); // Keep last 1000 objects
+```
+</Info>
+
+---
+
+## See Also
+
+- [Content Source](/api/content-source) - TrackSource interfaces and implementations
+- [MoqtObject](/api/moqt-object) - Object structure for track data
+- [Object Cache](/api/object-cache) - Caching implementations
+- [MOQtailClient](/api/moqtail-client) - Client methods for track management

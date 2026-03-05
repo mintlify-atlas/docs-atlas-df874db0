@@ -1,0 +1,786 @@
+---
+title: 'MOQtailClient'
+description: 'Main client class for establishing MOQT sessions and managing media streams'
+---
+
+# MOQtailClient
+
+The `MOQtailClient` class represents a Media Over QUIC Transport (MOQT) client session. It provides high-level methods for subscribing to tracks, fetching historical data, announcing tracks for publication, and managing the session lifecycle.
+
+## Overview
+
+Once initialized, the client provides methods for MOQT requests and publishing. If a protocol violation occurs, the client will terminate and must be re-initialized.
+
+## Initialization
+
+### `MOQtailClient.new()`
+
+Establishes a new client session over WebTransport and performs the MOQT setup handshake.
+
+```typescript
+static async new(args: MOQtailClientOptions): Promise<MOQtailClient>
+```
+
+<ParamField path="args" type="MOQtailClientOptions" required>
+  Configuration options for the client connection.
+  
+  <Expandable title="MOQtailClientOptions properties">
+    <ParamField path="url" type="string | URL" required>
+      Relay/server endpoint for the WebTransport session
+    </ParamField>
+    
+    <ParamField path="supportedVersions" type="number[]" required>
+      Ordered preference list of MOQT protocol version numbers (e.g. `[0xff00000e]` for Draft-14)
+    </ParamField>
+    
+    <ParamField path="setupParameters" type="SetupParameters">
+      Optional setup parameters for customizing the MOQT handshake
+    </ParamField>
+    
+    <ParamField path="transportOptions" type="WebTransportOptions">
+      Options passed directly to the WebTransport constructor
+    </ParamField>
+    
+    <ParamField path="dataStreamTimeoutMs" type="number">
+      Per-data unidirectional stream idle timeout in milliseconds
+    </ParamField>
+    
+    <ParamField path="controlStreamTimeoutMs" type="number">
+      Control stream read timeout in milliseconds
+    </ParamField>
+    
+    <ParamField path="enableDatagrams" type="boolean">
+      If true, enables datagram support for the session
+    </ParamField>
+    
+    <ParamField path="callbacks" type="object">
+      Optional callbacks for observability and logging
+      
+      <Expandable title="Callback properties">
+        <ResponseField name="onMessageSent" type="(msg: ControlMessage) => void">
+          Called after a control message is successfully written
+        </ResponseField>
+        
+        <ResponseField name="onMessageReceived" type="(msg: ControlMessage) => void">
+          Called for each incoming control message before protocol handling
+        </ResponseField>
+        
+        <ResponseField name="onSessionTerminated" type="(reason?: unknown) => void">
+          Fired once when the session ends (normal or error)
+        </ResponseField>
+        
+        <ResponseField name="onDatagramReceived" type="(data: DatagramObject | DatagramStatus) => void">
+          Invoked for each decoded datagram arriving
+        </ResponseField>
+        
+        <ResponseField name="onDatagramSent" type="(data: DatagramObject | DatagramStatus) => void">
+          Invoked after enqueuing each outbound datagram
+        </ResponseField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="Promise<MOQtailClient>">
+  A promise resolving to a ready client instance
+</ResponseField>
+
+**Throws:**
+- `ProtocolViolationError` - If the server sends an unexpected or invalid message during setup
+- `Error` - On WebTransport connection failure
+
+<CodeGroup>
+```typescript Minimal Connection
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com/moq',
+  supportedVersions: [0xff00000e] // Draft-14
+});
+```
+
+```typescript With Options and Callbacks
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com/moq',
+  supportedVersions: [0xff00000e],
+  setupParameters: new SetupParameters().addMaxRequestId(1000),
+  transportOptions: { congestionControl: 'default' },
+  dataStreamTimeoutMs: 5000,
+  controlStreamTimeoutMs: 2000,
+  enableDatagrams: true,
+  callbacks: {
+    onMessageSent: msg => console.log('Sent:', msg),
+    onMessageReceived: msg => console.log('Received:', msg),
+    onSessionTerminated: reason => console.warn('Session ended:', reason),
+  }
+});
+```
+</CodeGroup>
+
+---
+
+## Subscription Methods
+
+### `subscribe()`
+
+Subscribes to a track and returns a stream of `MoqtObject`s matching the requested window and relay forwarding mode.
+
+```typescript
+async subscribe(args: SubscribeOptions): Promise<SubscribeError | { requestId: bigint; stream: ReadableStream<MoqtObject> }>
+```
+
+<ParamField path="args" type="SubscribeOptions" required>
+  Subscription parameters
+  
+  <Expandable title="SubscribeOptions properties">
+    <ParamField path="fullTrackName" type="FullTrackName" required>
+      Fully qualified track identifier
+    </ParamField>
+    
+    <ParamField path="priority" type="number" required>
+      Subscriber priority (0 = highest, 255 = lowest)
+    </ParamField>
+    
+    <ParamField path="groupOrder" type="GroupOrder" required>
+      Desired delivery ordering (e.g. `GroupOrder.Original`)
+    </ParamField>
+    
+    <ParamField path="forward" type="boolean" required>
+      If true, deliver objects forward (ascending); if false, reverse/backward
+    </ParamField>
+    
+    <ParamField path="filterType" type="FilterType" required>
+      Filter variant controlling starting subset:
+      - `FilterType.LatestObject` - Start from latest available object
+      - `FilterType.NextGroupStart` - Start from beginning of next group
+      - `FilterType.AbsoluteStart` - Start from specified location (requires `startLocation`)
+      - `FilterType.AbsoluteRange` - Subscribe to specific range (requires `startLocation` and `endGroup`)
+    </ParamField>
+    
+    <ParamField path="startLocation" type="Location">
+      Required for `AbsoluteStart` and `AbsoluteRange` filter types
+    </ParamField>
+    
+    <ParamField path="endGroup" type="bigint | number">
+      Required for `AbsoluteRange` - exclusive upper group boundary
+    </ParamField>
+    
+    <ParamField path="parameters" type="VersionSpecificParameters">
+      Optional extension parameters
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="SubscribeError | { requestId: bigint; stream: ReadableStream<MoqtObject> }">
+  Either a `SubscribeError` on refusal, or an object containing:
+  - `requestId` - The subscription ID for use with `unsubscribe()` or `subscribeUpdate()`
+  - `stream` - A `ReadableStream<MoqtObject>` for consuming objects
+</ResponseField>
+
+**Throws:**
+- `MOQtailError` - If the client is destroyed
+- `ProtocolViolationError` - If required fields are missing or inconsistent
+- `InternalError` - On transport/protocol failure (disconnect is triggered before rethrow)
+
+<CodeGroup>
+```typescript Subscribe to Latest
+const result = await client.subscribe({
+  fullTrackName: FullTrackName.tryNew('video/main', 'h264'),
+  filterType: FilterType.LatestObject,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 0
+});
+
+if (!(result instanceof SubscribeError)) {
+  for await (const obj of result.stream) {
+    // Process MoqtObject
+    console.log('Group:', obj.groupId, 'Object:', obj.objectId);
+  }
+}
+```
+
+```typescript Subscribe to Range
+const result = await client.subscribe({
+  fullTrackName,
+  filterType: FilterType.AbsoluteRange,
+  startLocation: new Location(100n, 0n),
+  endGroup: 200n,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 32
+});
+```
+</CodeGroup>
+
+### `unsubscribe()`
+
+Stops an active subscription identified by its request ID.
+
+```typescript
+async unsubscribe(requestId: bigint | number): Promise<void>
+```
+
+<ParamField path="requestId" type="bigint | number" required>
+  The subscription request ID returned from `subscribe()`
+</ParamField>
+
+**Throws:**
+- `MOQtailError` - If the client is destroyed
+- `InternalError` - On transport failure
+
+```typescript
+await client.unsubscribe(subscriptionId);
+```
+
+### `subscribeUpdate()`
+
+Narrows or updates an active subscription window and/or relay forwarding behavior.
+
+```typescript
+async subscribeUpdate(args: SubscribeUpdateOptions): Promise<void>
+```
+
+<ParamField path="args" type="SubscribeUpdateOptions" required>
+  Update parameters
+  
+  <Expandable title="SubscribeUpdateOptions properties">
+    <ParamField path="subscriptionRequestId" type="bigint" required>
+      The original subscription request ID
+    </ParamField>
+    
+    <ParamField path="startLocation" type="Location" required>
+      New narrowed start location (can only move forward)
+    </ParamField>
+    
+    <ParamField path="endGroup" type="bigint" required>
+      New narrowed end group (can only move backward)
+    </ParamField>
+    
+    <ParamField path="priority" type="number" required>
+      Updated subscriber priority
+    </ParamField>
+    
+    <ParamField path="forward" type="boolean" required>
+      Updated direction flag
+    </ParamField>
+    
+    <ParamField path="parameters" type="VersionSpecificParameters">
+      Optional additional parameters
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Throws:**
+- `MOQtailError` - If the client is destroyed
+- `ProtocolViolationError` - If the update would widen the window
+- `InternalError` - On transport failure
+
+```typescript
+await client.subscribeUpdate({
+  subscriptionRequestId: subId,
+  startLocation: new Location(150n, 0n),
+  endGroup: 180n,
+  priority: 16,
+  forward: true
+});
+```
+
+### `switch()`
+
+Switches an active subscription to a different track while retaining the same subscription parameters.
+
+```typescript
+async switch(args: SwitchOptions): Promise<SubscribeError | { requestId: bigint; stream: ReadableStream<MoqtObject> }>
+```
+
+<ParamField path="args" type="SwitchOptions" required>
+  Switch parameters
+  
+  <Expandable title="SwitchOptions properties">
+    <ParamField path="fullTrackName" type="FullTrackName" required>
+      New track to switch to
+    </ParamField>
+    
+    <ParamField path="subscriptionRequestId" type="bigint" required>
+      The original subscription request ID
+    </ParamField>
+    
+    <ParamField path="parameters" type="VersionSpecificParameters">
+      Optional additional parameters
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="SubscribeError | { requestId: bigint; stream: ReadableStream<MoqtObject> }">
+  Either a `SubscribeError` or an object with the new `requestId` and `stream`
+</ResponseField>
+
+```typescript
+const result = await client.switch({
+  subscriptionRequestId: currentSubId,
+  fullTrackName: newTrackName
+});
+```
+
+---
+
+## Fetch Methods
+
+### `fetch()`
+
+One-shot retrieval of a bounded object span, returning a stream of `MoqtObject`s.
+
+```typescript
+async fetch(args: FetchOptions): Promise<FetchError | { requestId: bigint; stream: ReadableStream<MoqtObject> }>
+```
+
+<ParamField path="args" type="FetchOptions" required>
+  Fetch parameters
+  
+  <Expandable title="FetchOptions properties">
+    <ParamField path="priority" type="number" required>
+      Request priority (0 = highest, 255 = lowest)
+    </ParamField>
+    
+    <ParamField path="groupOrder" type="GroupOrder" required>
+      Desired delivery ordering
+    </ParamField>
+    
+    <ParamField path="typeAndProps" type="object" required>
+      Discriminated union selecting fetch mode:
+      
+      **Standalone:**
+      ```typescript
+      {
+        type: FetchType.StandAlone,
+        props: {
+          fullTrackName: FullTrackName,
+          startLocation: Location,
+          endLocation: Location
+        }
+      }
+      ```
+      
+      **Relative:**
+      ```typescript
+      {
+        type: FetchType.Relative,
+        props: {
+          joiningRequestId: bigint,
+          joiningStart: bigint
+        }
+      }
+      ```
+      
+      **Absolute:**
+      ```typescript
+      {
+        type: FetchType.Absolute,
+        props: {
+          joiningRequestId: bigint,
+          joiningStart: bigint
+        }
+      }
+      ```
+    </ParamField>
+    
+    <ParamField path="parameters" type="VersionSpecificParameters">
+      Optional extension parameters
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="FetchError | { requestId: bigint; stream: ReadableStream<MoqtObject> }">
+  Either a `FetchError` or an object with `requestId` and a finite `stream`
+</ResponseField>
+
+**Throws:**
+- `MOQtailError` - If client is destroyed
+- `ProtocolViolationError` - Priority out of [0-255] or invalid parameters
+- `InternalError` - On transport failure
+
+<CodeGroup>
+```typescript Standalone Fetch
+const result = await client.fetch({
+  priority: 64,
+  groupOrder: GroupOrder.Original,
+  typeAndProps: {
+    type: FetchType.StandAlone,
+    props: {
+      fullTrackName,
+      startLocation: new Location(0n, 0n),
+      endLocation: new Location(10n, 0n)
+    }
+  }
+});
+
+if (!(result instanceof FetchError)) {
+  for await (const obj of result.stream) {
+    // Process historical objects
+  }
+}
+```
+
+```typescript Relative Fetch
+const sub = await client.subscribe({
+  fullTrackName,
+  filterType: FilterType.LatestObject,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 0
+});
+
+if (!(sub instanceof SubscribeError)) {
+  const fetchResult = await client.fetch({
+    priority: 32,
+    groupOrder: GroupOrder.Original,
+    typeAndProps: {
+      type: FetchType.Relative,
+      props: {
+        joiningRequestId: sub.requestId,
+        joiningStart: 0n
+      }
+    }
+  });
+}
+```
+</CodeGroup>
+
+---
+
+## Publishing Methods
+
+### `publishNamespace()`
+
+Announces a namespace for publishing tracks.
+
+```typescript
+async publishNamespace(namespace: Tuple | string, parameters?: VersionSpecificParameters): Promise<PublishNamespaceError | PublishNamespaceOk>
+```
+
+<ParamField path="namespace" type="Tuple | string" required>
+  Namespace tuple or slash-separated string path
+</ParamField>
+
+<ParamField path="parameters" type="VersionSpecificParameters">
+  Optional extension parameters
+</ParamField>
+
+<ResponseField name="return" type="PublishNamespaceError | PublishNamespaceOk">
+  Either an error or success response
+</ResponseField>
+
+```typescript
+const result = await client.publishNamespace(['video', 'camera1']);
+
+if (!(result instanceof PublishNamespaceError)) {
+  console.log('Namespace announced successfully');
+}
+```
+
+### `publishNamespaceDone()`
+
+Signals that a previously announced namespace is no longer being published.
+
+```typescript
+async publishNamespaceDone(namespace: Tuple | string): Promise<void>
+```
+
+<ParamField path="namespace" type="Tuple | string" required>
+  Namespace to mark as done
+</ParamField>
+
+```typescript
+await client.publishNamespaceDone(['video', 'camera1']);
+```
+
+### `addOrUpdateTrack()`
+
+Registers or updates a track definition for local publishing.
+
+```typescript
+addOrUpdateTrack(track: Track): void
+```
+
+<ParamField path="track" type="Track" required>
+  Track definition containing name, sources, and metadata. See [Track](/api/track) documentation.
+</ParamField>
+
+**Throws:**
+- `MOQtailError` - If the client has been destroyed
+
+```typescript
+client.addOrUpdateTrack({
+  fullTrackName: FullTrackName.tryNew('video/main', 'h264'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { live: liveStream },
+  publisherPriority: 0
+});
+```
+
+### `removeTrack()`
+
+Removes a previously registered track from the client's local catalog.
+
+```typescript
+removeTrack(track: Track): void
+```
+
+<ParamField path="track" type="Track" required>
+  Track to remove
+</ParamField>
+
+**Throws:**
+- `MOQtailError` - If the client has been destroyed
+
+```typescript
+client.removeTrack(track);
+```
+
+---
+
+## Datagram Methods
+
+### `startDatagrams()`
+
+Starts receiving datagrams from the WebTransport connection.
+
+```typescript
+async startDatagrams(): Promise<void>
+```
+
+**Throws:**
+- `MOQtailError` - If client is destroyed or datagrams already started
+
+```typescript
+await client.startDatagrams();
+```
+
+### `stopDatagrams()`
+
+Stops receiving datagrams and releases resources. Idempotent.
+
+```typescript
+async stopDatagrams(): Promise<void>
+```
+
+```typescript
+await client.stopDatagrams();
+```
+
+### `subscribeToTrackDatagrams()`
+
+Subscribes to receive datagrams for a specific track.
+
+```typescript
+subscribeToTrackDatagrams(trackAlias: bigint, handler: (obj: MoqtObject) => void): () => void
+```
+
+<ParamField path="trackAlias" type="bigint" required>
+  Track alias to subscribe to
+</ParamField>
+
+<ParamField path="handler" type="(obj: MoqtObject) => void" required>
+  Function called for each received MoqtObject on this track
+</ParamField>
+
+<ResponseField name="return" type="() => void">
+  Unsubscribe function to remove the handler
+</ResponseField>
+
+```typescript
+const unsubscribe = client.subscribeToTrackDatagrams(trackAlias, (obj) => {
+  console.log('Received datagram:', obj.payload);
+});
+
+// Later:
+unsubscribe();
+```
+
+### `sendDatagram()`
+
+Sends a single MoqtObject as a datagram.
+
+```typescript
+async sendDatagram(trackAlias: bigint, object: MoqtObject): Promise<void>
+```
+
+<ParamField path="trackAlias" type="bigint" required>
+  Track alias for this object
+</ParamField>
+
+<ParamField path="object" type="MoqtObject" required>
+  MoqtObject to send
+</ParamField>
+
+**Throws:**
+- `MOQtailError` - If datagram writer not initialized
+- `InternalError` - If object has neither payload nor status
+
+```typescript
+await client.sendDatagram(trackAlias, moqtObject);
+```
+
+### `createDatagramSender()`
+
+Creates a datagram sender for a specific track.
+
+```typescript
+createDatagram Sender(trackAlias: bigint): SendDatagramStream
+```
+
+<ParamField path="trackAlias" type="bigint" required>
+  Track alias for outgoing datagrams
+</ParamField>
+
+<ResponseField name="return" type="SendDatagramStream">
+  A SendDatagramStream for writing MoqtObjects as datagrams
+</ResponseField>
+
+**Throws:**
+- `MOQtailError` - If datagram writer not initialized
+
+```typescript
+const sender = client.createDatagramSender(trackAlias);
+await sender.write(moqtObject);
+```
+
+---
+
+## Session Management
+
+### `disconnect()`
+
+Gracefully terminates the client session and releases WebTransport resources.
+
+```typescript
+async disconnect(reason?: unknown): Promise<void>
+```
+
+<ParamField path="reason" type="unknown">
+  Optional application-level reason (string or error) passed to `onSessionTerminated` callback
+</ParamField>
+
+```typescript
+await client.disconnect('user logout');
+```
+
+---
+
+## Properties
+
+### `serverSetup`
+
+Gets the current server setup configuration.
+
+```typescript
+get serverSetup(): ServerSetup
+```
+
+<ResponseField name="return" type="ServerSetup">
+  The ServerSetup instance negotiated during connection
+</ResponseField>
+
+```typescript
+const setup = client.serverSetup;
+console.log('Negotiated version:', setup.selectedVersion);
+```
+
+### `isDatagramsEnabled`
+
+Returns true if datagram support is currently active.
+
+```typescript
+get isDatagramsEnabled(): boolean
+```
+
+```typescript
+if (client.isDatagramsEnabled) {
+  console.log('Datagrams are active');
+}
+```
+
+### `receivedDatagramObjects`
+
+Stream of all received MoqtObjects from datagrams across all tracks.
+
+```typescript
+readonly receivedDatagramObjects: ReadableStream<MoqtObject>
+```
+
+<Warning>
+Only one reader should be active. For multiple subscribers, use `subscribeToTrackDatagrams()` instead.
+</Warning>
+
+```typescript
+const reader = client.receivedDatagramObjects.getReader();
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  // Process datagram object
+}
+```
+
+---
+
+## Event Callbacks
+
+These callbacks can be set after client initialization:
+
+### `onNamespacePublished`
+
+Fired when a `PUBLISH_NAMESPACE` control message is received.
+
+```typescript
+client.onNamespacePublished = (msg: PublishNamespace) => {
+  console.log('Namespace announced:', msg.namespace);
+};
+```
+
+### `onNamespaceDone`
+
+Fired when a `PUBLISH_NAMESPACE_DONE` control message is received.
+
+```typescript
+client.onNamespaceDone = (msg: PublishNamespaceDone) => {
+  console.log('Namespace done:', msg.namespace);
+};
+```
+
+### `onGoaway`
+
+Fired on `GOAWAY` reception signaling graceful session wind-down.
+
+```typescript
+client.onGoaway = (msg: GoAway) => {
+  console.warn('Server sent GOAWAY:', msg.newSessionUri);
+};
+```
+
+### `onPeerPublish`
+
+Fired when an inbound `PUBLISH` control message is received.
+
+```typescript
+client.onPeerPublish = (msg: Publish, stream: ReadableStream<MoqtObject>) => {
+  console.log('Peer publishing:', msg.fullTrackName);
+};
+```
+
+### `onError`
+
+General-purpose error callback for exceptions not thrown synchronously.
+
+```typescript
+client.onError = (error: unknown) => {
+  console.error('Client error:', error);
+};
+```
+
+---
+
+## See Also
+
+- [Client Setup](/api/client-setup) - Setup parameters and configuration
+- [Track](/api/track) - Track definition and management
+- [MoqtObject](/api/moqt-object) - Media object structure
+- [Content Source](/api/content-source) - Track content sources

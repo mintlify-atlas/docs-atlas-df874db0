@@ -1,0 +1,438 @@
+---
+title: "Error Codes"
+description: "Protocol error codes and termination codes for MOQT operations"
+---
+
+## Overview
+
+This page documents all error codes and status codes used in the MOQT protocol. These codes are returned in error response messages to indicate why a request failed.
+
+## Termination Codes
+
+Termination codes are used when closing a MOQT connection to indicate the reason for termination.
+
+```typescript
+enum TerminationCode {
+  NO_ERROR = 0x0,
+  INTERNAL_ERROR = 0x1,
+  UNAUTHORIZED = 0x2,
+  PROTOCOL_VIOLATION = 0x3,
+  INVALID_REQUEST_ID = 0x4,
+  DUPLICATE_TRACK_ALIAS = 0x5,
+  KEY_VALUE_FORMATTING_ERROR = 0x6,
+  TOO_MANY_REQUESTS = 0x7,
+  INVALID_PATH = 0x8,
+  MALFORMED_PATH = 0x9,
+  GOAWAY_TIMEOUT = 0x10,
+  CONTROL_MESSAGE_TIMEOUT = 0x11,
+  DATA_STREAM_TIMEOUT = 0x12,
+  AUTH_TOKEN_CACHE_OVERFLOW = 0x13,
+  DUPLICATE_AUTH_TOKEN_ALIAS = 0x14,
+  VERSION_NEGOTIATION_FAILED = 0x15,
+  MALFORMED_AUTH_TOKEN = 0x16,
+  UNKNOWN_AUTH_TOKEN_ALIAS = 0x17,
+  EXPIRED_AUTH_TOKEN = 0x18,
+  INVALID_AUTHORITY = 0x19,
+  MALFORMED_AUTHORITY = 0x1a,
+}
+```
+
+<Expandable title="Termination Code Details">
+  <ResponseField name="NO_ERROR" type="0x0">
+    Normal closure, no error occurred
+  </ResponseField>
+  
+  <ResponseField name="INTERNAL_ERROR" type="0x1">
+    Server encountered an internal error
+  </ResponseField>
+  
+  <ResponseField name="UNAUTHORIZED" type="0x2">
+    Client is not authorized to perform the operation
+  </ResponseField>
+  
+  <ResponseField name="PROTOCOL_VIOLATION" type="0x3">
+    Client violated the MOQT protocol specification
+  </ResponseField>
+  
+  <ResponseField name="INVALID_REQUEST_ID" type="0x4">
+    Request ID is invalid or out of sequence
+  </ResponseField>
+  
+  <ResponseField name="DUPLICATE_TRACK_ALIAS" type="0x5">
+    Track alias is already in use
+  </ResponseField>
+  
+  <ResponseField name="KEY_VALUE_FORMATTING_ERROR" type="0x6">
+    Key-value pair is incorrectly formatted
+  </ResponseField>
+  
+  <ResponseField name="TOO_MANY_REQUESTS" type="0x7">
+    Client has exceeded the request rate limit
+  </ResponseField>
+  
+  <ResponseField name="GOAWAY_TIMEOUT" type="0x10">
+    Server is shutting down, GOAWAY timeout exceeded
+  </ResponseField>
+  
+  <ResponseField name="VERSION_NEGOTIATION_FAILED" type="0x15">
+    Client and server could not agree on a protocol version
+  </ResponseField>
+</Expandable>
+
+---
+
+## Subscribe Error Codes
+
+Returned in `SubscribeError` messages when a subscription request fails.
+
+```typescript
+enum SubscribeErrorCode {
+  InternalError = 0x0,
+  Unauthorized = 0x1,
+  Timeout = 0x2,
+  NotSupported = 0x3,
+  TrackDoesNotExist = 0x4,
+  InvalidRange = 0x5,
+  MalformedAuthToken = 0x10,
+  ExpiredAuthToken = 0x12,
+}
+```
+
+<ResponseField name="InternalError" type="0x0">
+  Server encountered an internal error processing the subscription
+</ResponseField>
+
+<ResponseField name="Unauthorized" type="0x1">
+  Client is not authorized to subscribe to this track
+</ResponseField>
+
+<ResponseField name="Timeout" type="0x2">
+  Subscription request timed out
+</ResponseField>
+
+<ResponseField name="NotSupported" type="0x3">
+  Server does not support subscribing to this track
+</ResponseField>
+
+<ResponseField name="TrackDoesNotExist" type="0x4">
+  The requested track does not exist
+</ResponseField>
+
+<ResponseField name="InvalidRange" type="0x5">
+  The requested range is invalid (e.g., end < start)
+</ResponseField>
+
+<ResponseField name="MalformedAuthToken" type="0x10">
+  Authorization token is malformed or cannot be parsed
+</ResponseField>
+
+<ResponseField name="ExpiredAuthToken" type="0x12">
+  Authorization token has expired
+</ResponseField>
+
+---
+
+## Fetch Error Codes
+
+Returned in `FetchError` messages when a fetch request fails.
+
+```typescript
+enum FetchErrorCode {
+  InternalError = 0x0,
+  Unauthorized = 0x1,
+  Timeout = 0x2,
+  NotSupported = 0x3,
+  TrackDoesNotExist = 0x4,
+  InvalidRange = 0x5,
+  NoObjects = 0x6,
+  InvalidJoiningRequestId = 0x7,
+  UnknownStatusInRange = 0x8,
+  MalformedTrack = 0x9,
+  MalformedAuthToken = 0x10,
+  ExpiredAuthToken = 0x12,
+}
+```
+
+<ResponseField name="NoObjects" type="0x6">
+  No objects exist in the requested range
+</ResponseField>
+
+<ResponseField name="InvalidJoiningRequestId" type="0x7">
+  The joining request ID does not refer to a valid subscription
+</ResponseField>
+
+<ResponseField name="UnknownStatusInRange" type="0x8">
+  Track status is unknown for objects in the requested range
+</ResponseField>
+
+<ResponseField name="MalformedTrack" type="0x9">
+  Track structure is malformed or corrupt
+</ResponseField>
+
+---
+
+## PublishNamespace Error Codes
+
+Returned in `PublishNamespaceError` messages when a namespace announcement fails.
+
+```typescript
+enum PublishNamespaceErrorCode {
+  InternalError = 0x0,
+  Unauthorized = 0x1,
+  Timeout = 0x2,
+  NotSupported = 0x3,
+  Uninterested = 0x4,
+  MalformedAuthToken = 0x10,
+  UnknownAuthTokenAlias = 0x11,
+  ExpiredAuthToken = 0x12,
+}
+```
+
+<ResponseField name="Uninterested" type="0x4">
+  Server has no subscribers interested in this namespace
+</ResponseField>
+
+<ResponseField name="UnknownAuthTokenAlias" type="0x11">
+  Referenced auth token alias is unknown
+</ResponseField>
+
+---
+
+## SubscribeNamespace Error Codes
+
+Returned in `SubscribeNamespaceError` messages when a namespace subscription fails.
+
+```typescript
+enum SubscribeNamespaceErrorCode {
+  InternalError = 0x0,
+  Unauthorized = 0x1,
+  Timeout = 0x2,
+  NotSupported = 0x3,
+  NamespacePrefixUnknown = 0x4,
+  NamespacePrefixOverlap = 0x5,
+  MalformedAuthToken = 0x10,
+  ExpiredAuthToken = 0x12,
+}
+```
+
+<ResponseField name="NamespacePrefixUnknown" type="0x4">
+  The namespace prefix does not match any known namespace
+</ResponseField>
+
+<ResponseField name="NamespacePrefixOverlap" type="0x5">
+  The namespace prefix overlaps with an existing subscription
+</ResponseField>
+
+---
+
+## Track Status Codes
+
+Returned in `TrackStatusOk` messages to indicate track availability.
+
+```typescript
+enum TrackStatusCode {
+  InProgress = 0x00,
+  DoesNotExist = 0x01,
+  NotYetBegun = 0x02,
+  Finished = 0x03,
+  RelayUnavailable = 0x04,
+}
+```
+
+<ResponseField name="InProgress" type="0x00">
+  Track is actively being published and available for subscription
+</ResponseField>
+
+<ResponseField name="DoesNotExist" type="0x01">
+  Track does not exist or has never existed
+</ResponseField>
+
+<ResponseField name="NotYetBegun" type="0x02">
+  Track is scheduled to exist but has not started yet
+</ResponseField>
+
+<ResponseField name="Finished" type="0x03">
+  Track has completed and no more objects will be published
+</ResponseField>
+
+<ResponseField name="RelayUnavailable" type="0x04">
+  Relay cannot provide status information for this track
+</ResponseField>
+
+---
+
+## PublishDone Status Codes
+
+Returned in `PublishDone` messages to indicate why object delivery has stopped.
+
+```typescript
+enum PublishDoneStatusCode {
+  InternalError = 0x0,
+  Unauthorized = 0x1,
+  TrackEnded = 0x2,
+  SubscriptionEnded = 0x3,
+  GoingAway = 0x4,
+  Expired = 0x5,
+  TooFarBehind = 0x6,
+}
+```
+
+<ResponseField name="TrackEnded" type="0x2">
+  Track has ended normally
+</ResponseField>
+
+<ResponseField name="SubscriptionEnded" type="0x3">
+  Subscription was terminated by the client
+</ResponseField>
+
+<ResponseField name="GoingAway" type="0x4">
+  Server is shutting down
+</ResponseField>
+
+<ResponseField name="Expired" type="0x5">
+  Subscription has expired
+</ResponseField>
+
+<ResponseField name="TooFarBehind" type="0x6">
+  Client is too far behind and cannot catch up
+</ResponseField>
+
+---
+
+## Publish Error Codes
+
+Returned in `PublishError` messages when a publish request fails.
+
+```typescript
+enum PublishErrorCode {
+  InternalError = 0x0,
+  Unauthorized = 0x1,
+  Timeout = 0x2,
+  NotSupported = 0x3,
+  InvalidNamespace = 0x4,
+  InvalidTrackName = 0x5,
+  MalformedAuthToken = 0x10,
+  UnknownAuthTokenAlias = 0x11,
+  ExpiredAuthToken = 0x12,
+}
+```
+
+<ResponseField name="InvalidNamespace" type="0x4">
+  The namespace has not been announced or is invalid
+</ResponseField>
+
+<ResponseField name="InvalidTrackName" type="0x5">
+  The track name is invalid or malformed
+</ResponseField>
+
+---
+
+## Usage Examples
+
+### Handle Subscribe Error
+
+```typescript
+import { SubscribeErrorCode } from 'moqtail'
+
+subscription.onError((error) => {
+  switch (error.errorCode) {
+    case SubscribeErrorCode.TrackDoesNotExist:
+      console.error('Track not found')
+      break
+    
+    case SubscribeErrorCode.Unauthorized:
+      console.error('Not authorized to subscribe')
+      // Prompt for credentials
+      break
+    
+    case SubscribeErrorCode.InvalidRange:
+      console.error('Invalid subscription range')
+      // Adjust range and retry
+      break
+    
+    default:
+      console.error(`Subscribe failed: ${error.reasonPhrase}`)
+  }
+})
+```
+
+### Handle Track Status
+
+```typescript
+import { TrackStatusCode } from 'moqtail'
+
+const response = await queryTrackStatus(trackName)
+
+switch (response.statusCode) {
+  case TrackStatusCode.InProgress:
+    console.log('Track is live, subscribing...')
+    subscribe(trackName)
+    break
+  
+  case TrackStatusCode.Finished:
+    console.log('Track has ended, fetching archive')
+    fetchArchive(trackName)
+    break
+  
+  case TrackStatusCode.NotYetBegun:
+    console.log('Track scheduled for future, waiting...')
+    waitForTrack(trackName)
+    break
+  
+  case TrackStatusCode.DoesNotExist:
+    console.error('Track does not exist')
+    break
+}
+```
+
+### Parse Termination Code
+
+```typescript
+import { TerminationCode } from 'moqtail'
+
+connection.onClose((code) => {
+  const termCode = TerminationCode.tryFrom(code)
+  
+  switch (termCode) {
+    case TerminationCode.NO_ERROR:
+      console.log('Connection closed normally')
+      break
+    
+    case TerminationCode.PROTOCOL_VIOLATION:
+      console.error('Protocol violation detected')
+      break
+    
+    case TerminationCode.VERSION_NEGOTIATION_FAILED:
+      console.error('Could not agree on protocol version')
+      break
+    
+    default:
+      console.error(`Connection terminated: ${termCode}`)
+  }
+})
+```
+
+---
+
+## Error Handling Best Practices
+
+<Tip>
+  Always check error codes before error messages. Error codes are standardized, while reason phrases are human-readable and may vary.
+</Tip>
+
+<Warning>
+  **Retry Strategy:** Not all errors are retryable. `Unauthorized`, `TrackDoesNotExist`, and `InvalidRange` typically require user action or configuration changes.
+</Warning>
+
+<Note>
+  **Logging:** Include both the error code and reason phrase in logs for easier debugging.
+</Note>
+
+---
+
+## See Also
+
+- [Subscribe](/api/subscribe) - Handling subscription errors
+- [Fetch](/api/fetch) - Handling fetch errors
+- [PublishNamespace](/api/publish-namespace) - Handling namespace announcement errors
+- [TrackStatus](/api/track-status) - Querying track status

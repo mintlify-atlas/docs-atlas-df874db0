@@ -1,0 +1,437 @@
+---
+title: 'Playout Buffer'
+description: 'Implement smooth media playback with GOP-aware buffering and latency management'
+---
+
+## Overview
+
+The `PullPlayoutBuffer` provides consumer-driven playout with GOP-aware (Group of Pictures) buffering for smooth media playback. It manages latency, handles network jitter, and automatically drops outdated content to maintain target performance.
+
+<Note>
+The playout buffer is specifically designed for video streaming applications where maintaining target latency is critical for user experience.
+</Note>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="GOP-Aware" icon="images">
+    Automatically detects and manages Group of Pictures boundaries
+  </Card>
+  <Card title="Smart Eviction" icon="trash">
+    Drops entire GOPs when buffer is full to maintain decodable content
+  </Card>
+  <Card title="Consumer-Driven" icon="hand">
+    Pull-based API eliminates rate guessing and provides natural backpressure
+  </Card>
+  <Card title="Latency Management" icon="gauge">
+    Automatically manages buffer size to maintain target latency
+  </Card>
+</CardGroup>
+
+## Basic Usage
+
+<Steps>
+
+<Step title="Subscribe to a track">
+First, establish a subscription to receive objects:
+
+```typescript
+import { MOQtailClient, FilterType, GroupOrder } from 'moqtail';
+
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com/transport',
+  supportedVersions: [0xff00000b]
+});
+
+const result = await client.subscribe({
+  fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+  filterType: FilterType.LatestObject,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 0
+});
+
+if (result instanceof SubscribeError) {
+  console.error('Subscription failed');
+  return;
+}
+
+const { stream } = result;
+```
+</Step>
+
+<Step title="Create the playout buffer">
+Initialize the buffer with your stream and configuration:
+
+```typescript
+import { PullPlayoutBuffer } from 'moqtail';
+
+const playoutBuffer = new PullPlayoutBuffer(stream, {
+  bucketCapacity: 50,    // Max objects in buffer
+  targetLatencyMs: 500,  // Target latency in milliseconds
+  maxLatencyMs: 2000     // Max latency before dropping GOPs
+});
+```
+</Step>
+
+<Step title="Implement playout loop">
+Create a consumer-driven playout loop:
+
+```typescript
+const playoutLoop = () => {
+  playoutBuffer.nextObject((nextObject) => {
+    if (nextObject) {
+      // Decode and render the frame
+      decodeAndRender(nextObject);
+    }
+    
+    // Schedule next iteration
+    requestAnimationFrame(playoutLoop);
+  });
+};
+
+// Start the playout loop
+requestAnimationFrame(playoutLoop);
+```
+</Step>
+
+</Steps>
+
+## Configuration Options
+
+The `PullPlayoutBuffer` constructor accepts the following options:
+
+### bucketCapacity
+
+Maximum number of objects the buffer can hold:
+
+```typescript
+const playoutBuffer = new PullPlayoutBuffer(stream, {
+  bucketCapacity: 50, // Default: 50 objects
+  targetLatencyMs: 500,
+  maxLatencyMs: 2000
+});
+```
+
+<Note>
+Choose a capacity that balances memory usage with the ability to absorb network jitter. For 30fps video, 50 objects provides ~1.6 seconds of buffer.
+</Note>
+
+### targetLatencyMs
+
+Target latency in milliseconds that the buffer tries to maintain:
+
+```typescript
+const playoutBuffer = new PullPlayoutBuffer(stream, {
+  bucketCapacity: 50,
+  targetLatencyMs: 500, // Default: 500ms
+  maxLatencyMs: 2000
+});
+```
+
+<Warning>
+Setting target latency too low may cause frequent buffer underruns. Too high increases end-to-end latency.
+</Warning>
+
+### maxLatencyMs
+
+Maximum acceptable latency before the buffer drops entire GOPs:
+
+```typescript
+const playoutBuffer = new PullPlayoutBuffer(stream, {
+  bucketCapacity: 50,
+  targetLatencyMs: 500,
+  maxLatencyMs: 2000 // Default: 2000ms
+});
+```
+
+<Note>
+When latency exceeds this threshold, the buffer automatically drops the oldest complete GOP to catch up.
+</Note>
+
+## Consumer-Driven API
+
+The playout buffer uses a pull-based API for optimal control:
+
+### nextObject()
+
+Retrieve the next object from the buffer:
+
+```typescript
+playoutBuffer.nextObject((object) => {
+  if (object) {
+    console.log(`Got object ${object.objectId} from group ${object.groupId}`);
+    processObject(object);
+  } else {
+    console.log('No object available (buffer empty)');
+  }
+});
+```
+
+<Note>
+The callback pattern provides natural backpressure - you only pull objects when ready to process them.
+</Note>
+
+## Buffer Status
+
+Monitor buffer health with the status API:
+
+```typescript
+const status = playoutBuffer.getStatus();
+
+console.log(`Buffer size: ${status.bufferSize} objects`);
+console.log(`Running: ${status.isRunning}`);
+console.log(`Current latency: ${status.currentLatencyMs}ms`);
+```
+
+## Complete Example
+
+Here's a complete example integrating subscription and playout:
+
+```typescript
+import { 
+  MOQtailClient, 
+  PullPlayoutBuffer,
+  FilterType,
+  GroupOrder,
+  SubscribeError,
+  ObjectStatus
+} from 'moqtail';
+
+async function createVideoPlayer() {
+  // Initialize client
+  const client = await MOQtailClient.new({
+    url: 'https://relay.example.com/transport',
+    supportedVersions: [0xff00000b]
+  });
+
+  // Subscribe to live video
+  const result = await client.subscribe({
+    fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+    filterType: FilterType.LatestObject,
+    forward: true,
+    groupOrder: GroupOrder.Original,
+    priority: 0
+  });
+
+  if (result instanceof SubscribeError) {
+    console.error(`Failed to subscribe: ${result.errorReason.phrase}`);
+    return;
+  }
+
+  // Set up playout buffer
+  const playoutBuffer = new PullPlayoutBuffer(result.stream, {
+    bucketCapacity: 50,
+    targetLatencyMs: 500,
+    maxLatencyMs: 2000
+  });
+
+  // Video decoder setup (pseudo-code)
+  const decoder = new VideoDecoder({
+    output: (frame) => {
+      // Render frame to canvas
+      renderFrame(frame);
+    },
+    error: (error) => {
+      console.error('Decode error:', error);
+    }
+  });
+
+  decoder.configure({
+    codec: 'vp09.00.10.08',
+    // ... other config
+  });
+
+  // Consumer-driven playout loop
+  const playoutLoop = () => {
+    playoutBuffer.nextObject((nextObject) => {
+      if (nextObject && nextObject.objectStatus === ObjectStatus.Normal) {
+        if (nextObject.payload) {
+          // Decode the frame
+          const chunk = new EncodedVideoChunk({
+            type: nextObject.objectId === 0n ? 'key' : 'delta',
+            timestamp: Number(nextObject.groupId) * 33333, // Assume 30fps
+            data: nextObject.payload
+          });
+          
+          decoder.decode(chunk);
+        }
+      }
+
+      // Monitor buffer status
+      const status = playoutBuffer.getStatus();
+      if (status.bufferSize < 10) {
+        console.warn('Buffer running low:', status);
+      }
+      
+      // Schedule next iteration
+      requestAnimationFrame(playoutLoop);
+    });
+  };
+
+  // Start playout
+  requestAnimationFrame(playoutLoop);
+
+  return { client, playoutBuffer, decoder };
+}
+```
+
+## GOP-Aware Buffering
+
+The playout buffer understands GOP boundaries:
+
+### End of Group Detection
+
+The buffer detects end-of-group markers:
+
+```typescript
+playoutBuffer.nextObject((object) => {
+  if (object) {
+    if (object.objectStatus === ObjectStatus.EndOfGroup) {
+      console.log(`End of group ${object.groupId}`);
+      // GOP complete, safe point for quality switching
+    }
+  }
+});
+```
+
+### Smart Eviction
+
+When the buffer is full, it drops complete GOPs:
+
+```typescript
+// Buffer automatically drops oldest complete GOP when:
+// 1. Buffer capacity is exceeded
+// 2. Current latency > maxLatencyMs
+
+const playoutBuffer = new PullPlayoutBuffer(stream, {
+  bucketCapacity: 50,
+  targetLatencyMs: 500,
+  maxLatencyMs: 2000 // Trigger GOP eviction above this
+});
+```
+
+<Note>
+Dropping complete GOPs ensures you never have partial GOPs that can't be decoded.
+</Note>
+
+## Adaptive Bitrate Integration
+
+Use playout buffer status to drive ABR decisions:
+
+```typescript
+const playoutLoop = () => {
+  playoutBuffer.nextObject((nextObject) => {
+    if (nextObject) {
+      processObject(nextObject);
+    }
+
+    // Check buffer health
+    const status = playoutBuffer.getStatus();
+    
+    if (status.currentLatencyMs > 1500) {
+      // Buffer building up, can increase quality
+      console.log('Buffer healthy, consider quality upgrade');
+    } else if (status.bufferSize < 15) {
+      // Buffer running low, reduce quality
+      console.log('Buffer low, consider quality downgrade');
+    }
+    
+    requestAnimationFrame(playoutLoop);
+  });
+};
+```
+
+## Performance Monitoring
+
+Track playout performance over time:
+
+```typescript
+class PlayoutMonitor {
+  private stats = {
+    objectsPlayed: 0,
+    objectsDropped: 0,
+    totalLatency: 0,
+    samples: 0
+  };
+
+  recordObject(object: MoqtObject, status: BufferStatus) {
+    this.stats.objectsPlayed++;
+    this.stats.totalLatency += status.currentLatencyMs;
+    this.stats.samples++;
+  }
+
+  recordDrop() {
+    this.stats.objectsDropped++;
+  }
+
+  getMetrics() {
+    return {
+      played: this.stats.objectsPlayed,
+      dropped: this.stats.objectsDropped,
+      dropRate: this.stats.objectsDropped / 
+                (this.stats.objectsPlayed + this.stats.objectsDropped),
+      avgLatency: this.stats.totalLatency / this.stats.samples
+    };
+  }
+}
+
+const monitor = new PlayoutMonitor();
+
+const playoutLoop = () => {
+  playoutBuffer.nextObject((object) => {
+    const status = playoutBuffer.getStatus();
+    
+    if (object) {
+      monitor.recordObject(object, status);
+      processObject(object);
+    }
+    
+    // Log metrics periodically
+    if (monitor.getMetrics().played % 300 === 0) {
+      console.log('Playout metrics:', monitor.getMetrics());
+    }
+    
+    requestAnimationFrame(playoutLoop);
+  });
+};
+```
+
+## Cleanup
+
+Properly clean up resources when done:
+
+```typescript
+class VideoPlayer {
+  private playoutBuffer: PullPlayoutBuffer;
+  private decoder: VideoDecoder;
+  private animationId: number | null = null;
+
+  stop() {
+    // Cancel animation frame
+    if (this.animationId !== null) {
+      cancelAnimationFrame(this.animationId);
+      this.animationId = null;
+    }
+
+    // Close decoder
+    if (this.decoder.state !== 'closed') {
+      this.decoder.close();
+    }
+
+    // Buffer cleanup is automatic when stream ends
+    console.log('Player stopped');
+  }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Subscribing" icon="rss" href="/subscriber/subscribing">
+    Learn about subscription management
+  </Card>
+  <Card title="Track Discovery" icon="compass" href="/subscriber/track-discovery">
+    Discover available tracks dynamically
+  </Card>
+</CardGroup>

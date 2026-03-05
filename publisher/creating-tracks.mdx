@@ -1,0 +1,307 @@
+---
+title: 'Creating Tracks'
+description: 'Learn how to create and configure MOQT tracks for publishing content'
+---
+
+## Overview
+
+Tracks are the fundamental unit of content organization in MOQT. A track represents a logical stream of media or data, identified by a unique namespace and name combination. Publishers create tracks to make content available to subscribers.
+
+<Note>
+Each track must be registered with the client using `addOrUpdateTrack()` before it can be published to subscribers.
+</Note>
+
+## Track Structure
+
+Every track in Moqtail is defined by the `Track` interface:
+
+```typescript
+type Track = {
+  fullTrackName: FullTrackName
+  forwardingPreference: ObjectForwardingPreference
+  trackSource: TrackSource
+  publisherPriority: number
+  trackAlias?: bigint
+}
+```
+
+### Track Components
+
+<Steps>
+
+<Step title="Full Track Name">
+The globally unique identifier for your track, consisting of a namespace and name:
+
+```typescript
+import { FullTrackName } from 'moqtail-ts'
+
+// Using string path (namespace/name)
+const trackName = FullTrackName.tryNew('live/conference', 'video')
+
+// Using Tuple for namespace
+const trackName2 = FullTrackName.tryNew(
+  Tuple.tryNew(['media', 'camera', 'main']),
+  'stream'
+)
+```
+
+<Note>
+- Namespace can have 1-32 segments separated by `/`
+- Total serialized length must be under 4096 bytes
+- Names are case-sensitive
+</Note>
+</Step>
+
+<Step title="Forwarding Preference">
+Controls how objects should be delivered to subscribers:
+
+```typescript
+import { ObjectForwardingPreference } from 'moqtail-ts'
+
+// Datagram delivery (low-latency, loss-tolerant)
+const preference = ObjectForwardingPreference.Datagram
+
+// Subgroup delivery (reliable, ordered)
+const preference = ObjectForwardingPreference.Subgroup
+```
+
+| Preference | Use Case | Transport |
+|------------|----------|----------|
+| `Datagram` | Real-time audio/video where latency matters more than reliability | QUIC datagrams |
+| `Subgroup` | Reliable delivery where all objects must arrive | QUIC streams |
+
+</Step>
+
+<Step title="Track Source">
+Defines where content comes from - can be live, static, or hybrid. See [content source patterns](/publisher/live-streaming) for details.
+</Step>
+
+<Step title="Publisher Priority">
+Controls delivery priority (0 = highest, 255 = lowest):
+
+```typescript
+// Highest priority for primary video
+const track: Track = {
+  // ...
+  publisherPriority: 0
+}
+
+// Lower priority for auxiliary data
+const track: Track = {
+  // ...
+  publisherPriority: 128
+}
+```
+</Step>
+
+</Steps>
+
+## Creating Objects
+
+All content is packaged as `MoqtObject` instances before being added to a track:
+
+```typescript
+import { MoqtObject, Location, ObjectForwardingPreference } from 'moqtail-ts'
+
+// Create an object with payload
+const object = MoqtObject.newWithPayload(
+  fullTrackName,
+  new Location(groupId, objectId), // Position in track
+  publisherPriority,
+  ObjectForwardingPreference.Subgroup,
+  null, // subgroupId (optional)
+  null, // extension headers (optional)
+  payloadData // Uint8Array
+)
+```
+
+### Object Location
+
+Objects are positioned using a two-level hierarchy:
+
+```typescript
+import { Location } from 'moqtail-ts'
+
+// Group: logical segment (e.g., GOP in video)
+// Object: item within the group (e.g., frame)
+const location = new Location(
+  groupId,   // bigint or number
+  objectId   // bigint or number
+)
+```
+
+<CodeGroup>
+
+```typescript Video Example
+// For video encoding:
+// - Group = GOP (Group of Pictures)
+// - Object = Individual frame
+const keyframeLocation = new Location(5n, 0n)  // GOP 5, first frame
+const pFrameLocation = new Location(5n, 1n)    // GOP 5, second frame
+```
+
+```typescript Audio Example
+// For audio encoding:
+// - Group = Audio segment (e.g., 1 second)
+// - Object = Audio packet within segment
+const audioLocation = new Location(10n, 3n)  // Segment 10, packet 3
+```
+
+```typescript File Transfer
+// For file transfers:
+// - Group = File or large chunk
+// - Object = Individual chunk
+const chunkLocation = new Location(0n, 42n)  // File 0, chunk 42
+```
+
+</CodeGroup>
+
+## Registering Tracks
+
+Once you've defined a track, register it with the client:
+
+```typescript
+import { MOQtailClient } from 'moqtail-ts'
+
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com',
+  supportedVersions: [0xff00000b]
+})
+
+// Add the track
+client.addOrUpdateTrack(track)
+
+// Update an existing track (same fullTrackName)
+track.publisherPriority = 64
+client.addOrUpdateTrack(track)
+```
+
+<Warning>
+Tracks must be registered before calling `publishNamespace()`. Objects cannot be delivered until the namespace is announced.
+</Warning>
+
+## Complete Example
+
+Here's a complete example creating a live video track:
+
+```typescript
+import {
+  MOQtailClient,
+  FullTrackName,
+  Track,
+  ObjectForwardingPreference,
+  LiveTrackSource,
+  MoqtObject,
+  Location
+} from 'moqtail-ts'
+
+// 1. Create a stream of MoqtObjects
+const videoObjectStream = new ReadableStream<MoqtObject>({
+  async start(controller) {
+    let groupId = 0n
+    let objectId = 0n
+    
+    // Generate video objects (simplified)
+    for await (const frame of videoEncoder) {
+      const object = MoqtObject.newWithPayload(
+        fullTrackName,
+        new Location(groupId, objectId),
+        0, // highest priority
+        ObjectForwardingPreference.Subgroup,
+        null,
+        null,
+        frame.data
+      )
+      
+      controller.enqueue(object)
+      
+      // Move to next GOP on keyframe
+      if (frame.isKeyframe) {
+        groupId++
+        objectId = 0n
+      } else {
+        objectId++
+      }
+    }
+  }
+})
+
+// 2. Create track configuration
+const fullTrackName = FullTrackName.tryNew('conference/room42', 'video')
+
+const videoTrack: Track = {
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: {
+    live: new LiveTrackSource(videoObjectStream)
+  },
+  publisherPriority: 0
+}
+
+// 3. Connect and register
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com',
+  supportedVersions: [0xff00000b]
+})
+
+client.addOrUpdateTrack(videoTrack)
+
+// 4. Announce namespace
+await client.publishNamespace(['conference', 'room42'])
+
+console.log('Track is now available to subscribers!')
+```
+
+## Removing Tracks
+
+To stop publishing a track:
+
+```typescript
+// Remove from client registry
+client.removeTrack(track)
+
+// Optionally notify subscribers the namespace is done
+await client.publishNamespaceDone(['conference', 'room42'])
+```
+
+<Note>
+Removing a track doesn't cancel active subscriptions immediately. They continue until normal completion or until subscribers unsubscribe.
+</Note>
+
+## Best Practices
+
+<Card title="Naming Convention" icon="tag">
+Use hierarchical namespaces that reflect your application structure:
+- `app/feature/resource` (e.g., `video/conference/room42`)
+- Keep names descriptive but concise
+- Use consistent separators (e.g., always `/` not mixed with `-`)
+</Card>
+
+<Card title="Priority Management" icon="signal">
+- Reserve 0-31 for critical content (keyframes, control data)
+- Use 32-127 for normal content (regular frames)
+- Use 128-255 for low-priority content (thumbnails, analytics)
+</Card>
+
+<Card title="Object Organization" icon="layer-group">
+- Align groups with natural boundaries (GOPs, segments, files)
+- Keep object IDs sequential within groups
+- Use end-of-group markers for proper signaling
+</Card>
+
+## Next Steps
+
+<CardGroup cols={2}>
+<Card title="Live Streaming" icon="tower-broadcast" href="/publisher/live-streaming">
+Learn how to create real-time streaming tracks
+</Card>
+<Card title="Static Content" icon="database" href="/publisher/static-content">
+Publish pre-recorded or cached content
+</Card>
+<Card title="Hybrid Content" icon="arrows-split-up-and-left" href="/publisher/hybrid-content">
+Combine live and static delivery
+</Card>
+<Card title="Namespaces" icon="folder-tree" href="/publisher/namespaces">
+Organize and announce your tracks
+</Card>
+</CardGroup>

@@ -1,0 +1,178 @@
+---
+title: Introduction
+description: Overview of the Moqtail Rust library for Media over QUIC Transport (MOQT) protocol
+---
+
+# Moqtail Rust Library
+
+Moqtail is a Draft 14-compliant Media-over-QUIC (MoQ) protocol library written in Rust. It provides fundamental building blocks for developing MOQT-compliant applications that enable efficient streaming of live and on-demand media content over QUIC connections.
+
+<Note>
+  This library is under active development and the API is subject to change. Please use with caution in production environments.
+</Note>
+
+## What is MOQT?
+
+MOQT (Media over QUIC Transport) is a protocol designed specifically for media delivery over QUIC connections. It combines the benefits of QUIC's modern transport features with specialized capabilities for media streaming:
+
+- **Low latency**: Built on QUIC for minimal connection overhead
+- **Efficient streaming**: Optimized for live and on-demand content delivery
+- **Reliable transport**: Leverages QUIC's connection-oriented design
+- **Modern protocol**: Draft 14 compliance with ongoing standardization
+
+## Library Overview
+
+The Moqtail library is organized into four main modules:
+
+<CardGroup cols={2}>
+  <Card title="Client" icon="laptop" href="/rust/client">
+    Client-side functionality for connecting and consuming MOQT streams
+  </Card>
+  
+  <Card title="Relay" icon="server" href="/rust/relay">
+    Server-side relay functionality for forwarding MOQT streams
+  </Card>
+  
+  <Card title="Model" icon="cube" href="/rust/model">
+    Core protocol data structures and message types
+  </Card>
+  
+  <Card title="Transport" icon="network-wired" href="/rust/transport">
+    Low-level transport handlers for control and data streams
+  </Card>
+</CardGroup>
+
+## Key Features
+
+### Protocol Compliance
+
+Moqtail implements the MOQT Draft 14 specification, including:
+
+- Full control message support (Setup, Subscribe, Publish, Fetch, etc.)
+- Data stream handling with multiple forwarding preferences
+- Namespace-based track organization
+- Extension headers and parameters
+
+### Async-First Design
+
+Built on Tokio, the library provides:
+
+```rust
+use tokio;
+use moqtail::transport::control_stream_handler::ControlStreamHandler;
+
+// All operations are async and non-blocking
+#[tokio::main]
+async fn main() {
+    // Your MOQT application code
+}
+```
+
+### Type Safety
+
+Rust's type system ensures correctness at compile time:
+
+```rust
+use moqtail::model::common::tuple::Tuple;
+use moqtail::model::data::full_track_name::FullTrackName;
+
+// Create type-safe track identifiers
+let namespace = Tuple::from_utf8_path("conference/room1");
+let track_name = TupleField::from_utf8("video");
+let full_track = FullTrackName::new(namespace, track_name)?;
+```
+
+### Error Handling
+
+Comprehensive error types for robust applications:
+
+```rust
+use moqtail::model::error::{ParseError, TerminationCode};
+
+// Detailed error information
+match result {
+    Ok(message) => process_message(message),
+    Err(TerminationCode::ProtocolViolation) => handle_protocol_error(),
+    Err(TerminationCode::ControlMessageTimeout) => handle_timeout(),
+    Err(e) => handle_other_error(e),
+}
+```
+
+## Architecture
+
+The library follows a layered architecture:
+
+```
+┌─────────────────────────────────────┐
+│      Application Layer              │
+│  (Your streaming application)       │
+├─────────────────────────────────────┤
+│     Client / Relay Modules          │
+│  (High-level MOQT operations)       │
+├─────────────────────────────────────┤
+│      Transport Handlers             │
+│  (Control & Data stream mgmt)       │
+├─────────────────────────────────────┤
+│         Model Layer                 │
+│  (Protocol messages & types)        │
+├─────────────────────────────────────┤
+│      wtransport (QUIC)              │
+│  (Underlying QUIC transport)        │
+└─────────────────────────────────────┘
+```
+
+## Dependencies
+
+Moqtail is built on a modern Rust ecosystem:
+
+- **tokio**: Async runtime for non-blocking I/O
+- **wtransport**: WebTransport and QUIC implementation
+- **bytes**: Efficient byte buffer handling
+- **serde**: Serialization framework
+- **thiserror**: Ergonomic error handling
+
+## Use Cases
+
+Moqtail is suitable for building:
+
+- **Live streaming platforms**: Real-time video/audio delivery
+- **Conferencing systems**: Multi-party media exchange
+- **Gaming applications**: Low-latency media transport
+- **IoT streaming**: Sensor data and media from edge devices
+- **CDN infrastructure**: Origin and edge relay servers
+
+## Next Steps
+
+<Steps>
+  <Step title="Install the library">
+    Add Moqtail to your Cargo.toml and set up your development environment.
+    
+    [Installation Guide →](/rust/installation)
+  </Step>
+  
+  <Step title="Explore the protocol model">
+    Learn about MOQT messages, tracks, and data structures.
+    
+    [Model Reference →](/rust/model)
+  </Step>
+  
+  <Step title="Build a client">
+    Create a MOQT client to consume media streams.
+    
+    [Client Guide →](/rust/client)
+  </Step>
+  
+  <Step title="Set up a relay">
+    Deploy a relay server to forward MOQT streams.
+    
+    [Relay Guide →](/rust/relay)
+  </Step>
+</Steps>
+
+## Community and Support
+
+Moqtail is an open-source project licensed under Apache 2.0. Contributions, bug reports, and feedback are welcome.
+
+<Note>
+  For the latest updates and documentation, visit the [GitHub repository](https://github.com/moqt/moqtail).
+</Note>

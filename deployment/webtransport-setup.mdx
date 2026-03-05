@@ -1,0 +1,556 @@
+---
+title: 'WebTransport Setup'
+description: 'Configure WebTransport certificates and browser settings for MOQtail'
+icon: 'globe'
+---
+
+WebTransport is a modern protocol that enables low-latency, bidirectional communication between clients and servers. The MOQtail relay server uses WebTransport over QUIC, which requires proper SSL/TLS certificate configuration.
+
+## Understanding WebTransport Requirements
+
+WebTransport has strict security requirements:
+
+- **HTTPS/TLS is mandatory** - No plain text connections allowed
+- **Valid certificates required** - Browsers verify certificate chains
+- **UDP protocol** - Uses QUIC (UDP-based) instead of TCP
+- **Browser support** - Currently best supported in Chrome/Chromium
+
+<Warning>
+  Self-signed certificates require special browser configuration for development. Production deployments should use certificates from trusted Certificate Authorities.
+</Warning>
+
+## Development Setup
+
+For local development, use `mkcert` to generate trusted self-signed certificates.
+
+### Installing mkcert
+
+<Steps>
+  <Step title="Install mkcert">
+    <CodeGroup>
+    ```bash macOS
+    brew install mkcert
+    brew install nss  # if using Firefox
+    ```
+
+    ```bash Linux
+    # Debian/Ubuntu
+    sudo apt install libnss3-tools
+    wget https://github.com/FiloSottile/mkcert/releases/latest/download/mkcert-v*-linux-amd64
+    chmod +x mkcert-v*-linux-amd64
+    sudo mv mkcert-v*-linux-amd64 /usr/local/bin/mkcert
+
+    # Arch Linux
+    sudo pacman -S mkcert
+    ```
+
+    ```bash Windows
+    # Using Chocolatey
+    choco install mkcert
+
+    # Or download from GitHub releases
+    # https://github.com/FiloSottile/mkcert/releases
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Install local Certificate Authority">
+    This creates and installs a local CA in your system trust store:
+
+    ```bash
+    mkcert -install
+    ```
+
+    You should see output like:
+    ```
+    Created a new local CA at "/Users/username/Library/Application Support/mkcert"
+    The local CA is now installed in the system trust store!
+    ```
+  </Step>
+
+  <Step title="Generate certificates for localhost">
+    Navigate to the relay certificate directory:
+
+    ```bash
+    cd apps/relay/cert
+    ```
+
+    Generate certificates for localhost and common local addresses:
+
+    ```bash
+    mkcert -key-file key.pem -cert-file cert.pem localhost 127.0.0.1 ::1
+    ```
+
+    This creates two files:
+    - `cert.pem` - Public certificate
+    - `key.pem` - Private key
+
+    <Note>
+      The default relay configuration expects these files at `apps/relay/cert/cert.pem` and `apps/relay/cert/key.pem`.
+    </Note>
+  </Step>
+</Steps>
+
+### Custom Domains and IP Addresses
+
+To support additional domains or IP addresses:
+
+```bash
+# Include custom domain
+mkcert -key-file key.pem -cert-file cert.pem localhost 127.0.0.1 ::1 dev.example.com
+
+# Include LAN IP address
+mkcert -key-file key.pem -cert-file cert.pem localhost 127.0.0.1 ::1 192.168.1.100
+
+# Include multiple domains and IPs
+mkcert -key-file key.pem -cert-file cert.pem \
+  localhost 127.0.0.1 ::1 \
+  dev.moqtail.local \
+  192.168.1.100 \
+  10.0.0.50
+```
+
+## Browser Configuration
+
+### Chrome/Chromium (Recommended)
+
+Chrome has the best WebTransport support and requires enabling developer mode for self-signed certificates.
+
+<Steps>
+  <Step title="Enable WebTransport Developer Mode">
+    1. Open Chrome and navigate to:
+    ```
+    chrome://flags/#webtransport-developer-mode
+    ```
+
+    2. Find **"WebTransport Developer Mode"**
+
+    3. Set to **"Enabled"**
+
+    4. Click **"Relaunch"** to restart Chrome
+  </Step>
+
+  <Step title="Verify the setting">
+    After restart, verify WebTransport support:
+    ```javascript
+    // In browser console (F12)
+    'WebTransport' in window
+    // Should return: true
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  WebTransport Developer Mode allows connections to servers with certificates signed by untrusted CAs. This is essential for development with mkcert but should never be used in production.
+</Note>
+
+### Firefox
+
+<Warning>
+  Firefox WebTransport support is experimental and not fully tested with MOQtail. Chrome is strongly recommended.
+</Warning>
+
+For Firefox (experimental):
+
+1. Navigate to `about:config`
+2. Search for `network.webtransport.enabled`
+3. Set to `true`
+4. Accept the warning
+
+### Edge
+
+<Warning>
+  Microsoft Edge WebTransport configuration steps are pending. If you successfully configure Edge for MOQtail, please contribute the steps!
+</Warning>
+
+Edge uses the same Chromium engine as Chrome, so similar flags should be available at:
+```
+edge://flags/#webtransport-developer-mode
+```
+
+### Safari
+
+WebTransport is not yet supported in Safari.
+
+## Production Setup
+
+For production deployments, use certificates from a trusted Certificate Authority.
+
+### Let's Encrypt with Certbot
+
+<Steps>
+  <Step title="Install Certbot">
+    <CodeGroup>
+    ```bash Ubuntu/Debian
+    sudo apt update
+    sudo apt install certbot
+    ```
+
+    ```bash RHEL/CentOS
+    sudo yum install certbot
+    ```
+
+    ```bash macOS
+    brew install certbot
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Obtain certificates">
+    ```bash
+    # For HTTP-01 challenge (port 80 must be available)
+    sudo certbot certonly --standalone -d relay.example.com
+
+    # Or for DNS-01 challenge (no port 80 needed)
+    sudo certbot certonly --manual --preferred-challenges dns -d relay.example.com
+    ```
+  </Step>
+
+  <Step title="Configure relay with Let's Encrypt certificates">
+    Certificates are typically stored at:
+    ```
+    /etc/letsencrypt/live/relay.example.com/fullchain.pem
+    /etc/letsencrypt/live/relay.example.com/privkey.pem
+    ```
+
+    Run the relay with these certificates:
+    ```bash
+    cargo run --release --bin relay -- \
+      --port 443 \
+      --host 0.0.0.0 \
+      --cert-file /etc/letsencrypt/live/relay.example.com/fullchain.pem \
+      --key-file /etc/letsencrypt/live/relay.example.com/privkey.pem
+    ```
+  </Step>
+
+  <Step title="Setup auto-renewal">
+    Certbot automatically installs a renewal timer. Verify it:
+    ```bash
+    sudo systemctl status certbot.timer
+    ```
+
+    Test renewal:
+    ```bash
+    sudo certbot renew --dry-run
+    ```
+  </Step>
+</Steps>
+
+### Certificate Requirements
+
+Your production certificates must:
+
+1. **Be PEM-encoded** - MOQtail expects PEM format
+2. **Include full chain** - Certificate + intermediate certificates
+3. **Match the domain** - Certificate CN/SAN must match relay domain
+4. **Be currently valid** - Not expired or not yet valid
+5. **Use supported algorithms** - RSA 2048+ or ECDSA P-256+
+
+### Converting Certificate Formats
+
+If you have certificates in other formats:
+
+<CodeGroup>
+```bash DER to PEM
+# Convert DER certificate to PEM
+openssl x509 -inform der -in cert.der -out cert.pem
+
+# Convert DER key to PEM
+openssl rsa -inform der -in key.der -out key.pem
+```
+
+```bash PKCS#12 to PEM
+# Extract certificate
+openssl pkcs12 -in cert.p12 -clcerts -nokeys -out cert.pem
+
+# Extract key
+openssl pkcs12 -in cert.p12 -nocerts -nodes -out key.pem
+```
+
+```bash Combine chain
+# Combine certificate and intermediate
+cat cert.pem intermediate.pem > fullchain.pem
+```
+</CodeGroup>
+
+## Verifying Your Setup
+
+### Test Certificate Installation
+
+Verify the relay can load your certificates:
+
+```bash
+cargo run --bin relay -- \
+  --cert-file apps/relay/cert/cert.pem \
+  --key-file apps/relay/cert/key.pem
+```
+
+Successful output:
+```
+moqtail/0.12.0+a1b2c3d is running at https://localhost:4433
+```
+
+### Inspect Certificate Details
+
+```bash
+# View certificate information
+openssl x509 -in apps/relay/cert/cert.pem -text -noout
+
+# Check certificate validity
+openssl x509 -in apps/relay/cert/cert.pem -noout -dates
+
+# Verify certificate and key match
+openssl x509 -in cert.pem -noout -modulus | openssl md5
+openssl rsa -in key.pem -noout -modulus | openssl md5
+# These should output the same hash
+```
+
+### Test WebTransport Connection
+
+Create a simple test HTML file:
+
+```html test.html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebTransport Test</title>
+</head>
+<body>
+  <h1>WebTransport Connection Test</h1>
+  <button onclick="testConnection()">Test Connection</button>
+  <pre id="output"></pre>
+
+  <script>
+    async function testConnection() {
+      const output = document.getElementById('output');
+      
+      try {
+        output.textContent = 'Connecting...\n';
+        
+        const url = 'https://localhost:4433';
+        const transport = new WebTransport(url);
+        
+        await transport.ready;
+        output.textContent += 'Connected successfully!\n';
+        output.textContent += `Server: ${url}\n`;
+        
+        await transport.close();
+        output.textContent += 'Connection closed.\n';
+      } catch (error) {
+        output.textContent += `Error: ${error.message}\n`;
+        console.error('Connection failed:', error);
+      }
+    }
+  </script>
+</body>
+</html>
+```
+
+Open in Chrome with WebTransport Developer Mode enabled.
+
+## Firewall Configuration
+
+WebTransport uses UDP, not TCP. Ensure your firewall allows UDP traffic:
+
+<CodeGroup>
+```bash UFW (Ubuntu)
+# Allow UDP on port 4433
+sudo ufw allow 4433/udp
+
+# For production (port 443)
+sudo ufw allow 443/udp
+```
+
+```bash firewalld (RHEL/CentOS)
+# Allow UDP on port 4433
+sudo firewall-cmd --permanent --add-port=4433/udp
+sudo firewall-cmd --reload
+
+# For production (port 443)
+sudo firewall-cmd --permanent --add-port=443/udp
+sudo firewall-cmd --reload
+```
+
+```bash iptables
+# Allow UDP on port 4433
+sudo iptables -A INPUT -p udp --dport 4433 -j ACCEPT
+sudo iptables-save
+```
+</CodeGroup>
+
+### Cloud Provider Security Groups
+
+**AWS Security Group:**
+```
+Type: Custom UDP
+Protocol: UDP
+Port Range: 4433
+Source: 0.0.0.0/0
+```
+
+**GCP Firewall Rule:**
+```bash
+gcloud compute firewall-rules create allow-webtransport \
+  --allow udp:4433 \
+  --source-ranges 0.0.0.0/0 \
+  --target-tags webtransport-server
+```
+
+**Azure Network Security Group:**
+```
+Priority: 1000
+Name: Allow-WebTransport
+Port: 4433
+Protocol: UDP
+Source: Any
+Destination: Any
+Action: Allow
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="WebTransport connection fails">
+    **Symptoms:**
+    ```javascript
+    Failed to construct 'WebTransport': 
+    The server's certificate was not trusted.
+    ```
+
+    **Solutions:**
+    1. Verify mkcert CA is installed: `mkcert -CAROOT`
+    2. Enable WebTransport Developer Mode in Chrome
+    3. Check certificate includes the domain/IP you're connecting to
+    4. Restart browser after enabling developer mode
+  </Accordion>
+
+  <Accordion title="Certificate verification failed">
+    **Error:**
+    ```
+    Failed to load identity from PEM files: 
+    Error reading certificate file
+    ```
+
+    **Solutions:**
+    ```bash
+    # Verify files exist
+    ls -la apps/relay/cert/*.pem
+
+    # Check file format
+    openssl x509 -in apps/relay/cert/cert.pem -text -noout
+    openssl rsa -in apps/relay/cert/key.pem -check
+
+    # Regenerate if corrupted
+    cd apps/relay/cert
+    mkcert -key-file key.pem -cert-file cert.pem localhost 127.0.0.1 ::1
+    ```
+  </Accordion>
+
+  <Accordion title="Connection works locally but not remotely">
+    **Possible causes:**
+    - Certificate doesn't include remote IP/domain
+    - Firewall blocking UDP traffic
+    - Server bound to localhost instead of 0.0.0.0
+
+    **Solutions:**
+    ```bash
+    # Regenerate cert with your public IP
+    mkcert -key-file key.pem -cert-file cert.pem \
+      localhost 127.0.0.1 ::1 YOUR.PUBLIC.IP.ADDRESS
+
+    # Bind to all interfaces
+    cargo run --bin relay -- --host 0.0.0.0
+
+    # Check firewall
+    sudo ufw status
+    sudo ufw allow 4433/udp
+    ```
+  </Accordion>
+
+  <Accordion title="Browser reports WebTransport not available">
+    **Check:**
+    ```javascript
+    // In browser console
+    'WebTransport' in window
+    ```
+
+    If returns `false`:
+    - Update to latest Chrome (version 97+)
+    - Enable `chrome://flags/#webtransport-developer-mode`
+    - Try Chrome Canary for cutting-edge support
+    - Firefox and Safari don't fully support WebTransport yet
+  </Accordion>
+</AccordionGroup>
+
+## Security Best Practices
+
+<Warning>
+  Never use WebTransport Developer Mode in production. It disables important security checks.
+</Warning>
+
+### Development
+
+✅ **Do:**
+- Use mkcert for local development certificates
+- Enable WebTransport Developer Mode only in development
+- Keep certificates in `apps/relay/cert/` (gitignored)
+- Regenerate certificates if you add new domains/IPs
+
+❌ **Don't:**
+- Commit private keys to version control
+- Share mkcert CA root certificate
+- Use self-signed certificates in production
+- Disable certificate validation in production code
+
+### Production
+
+✅ **Do:**
+- Use certificates from trusted CAs (Let's Encrypt, DigiCert, etc.)
+- Implement automatic certificate renewal
+- Monitor certificate expiration dates
+- Use certificate pinning for critical applications
+- Keep private keys secure (mode 600, encrypted storage)
+- Use separate certificates per environment
+
+❌ **Don't:**
+- Use self-signed certificates
+- Share certificates across environments
+- Commit production certificates to repositories
+- Use weak key sizes (< 2048 bits RSA)
+
+## Code Reference
+
+The relay loads certificates using the wtransport library:
+
+```rust apps/relay/src/server/config.rs:117
+pub async fn build_server_config(&self) -> Result<ServerConfig> {
+  let identity = match Identity::load_pemfiles(&self.cert_file, &self.key_file).await {
+    Ok(identity) => identity,
+    Err(e) => {
+      error!("Failed to load identity from PEM files: {:?}", e);
+      return Err(e.into());
+    }
+  };
+
+  let config = ServerConfig::builder()
+    .with_bind_default(self.port)
+    .with_identity(identity)
+    .keep_alive_interval(Some(Duration::from_secs(self.keep_alive_interval)))
+    .max_idle_timeout(Some(Duration::from_secs(self.max_idle_timeout)))
+    .unwrap()
+    .build();
+
+  Ok(config)
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Relay Server Configuration" icon="server" href="/deployment/relay-server">
+    Configure advanced relay server options
+  </Card>
+  <Card title="Connect Clients" icon="plug" href="/quickstart">
+    Connect WebTransport clients to your relay
+  </Card>
+</CardGroup>

@@ -1,0 +1,367 @@
+---
+title: "TrackStatus"
+description: "Query the availability and status of a track"
+---
+
+## Overview
+
+The `TrackStatus` class represents a MOQT TrackStatus control message. It allows clients to query the availability and current status of a track before subscribing, enabling smart prefetching and backfill strategies.
+
+## Class Definition
+
+```typescript
+class TrackStatus {
+  private constructor(
+    public requestId: bigint,
+    public trackAlias: bigint,
+    public fullTrackName: FullTrackName,
+    public subscriberPriority: number,
+    public groupOrder: GroupOrder,
+    public forward: boolean,
+    public filterType: FilterType,
+    public startLocation: Location | undefined,
+    public endGroup: bigint | undefined,
+    public subscribeParameters: KeyValuePair[],
+  )
+}
+```
+
+## Properties
+
+<ParamField path="requestId" type="bigint" required>
+  Unique identifier for this track status request.
+</ParamField>
+
+<ParamField path="trackAlias" type="bigint" required>
+  Alias identifier for the track, used to correlate responses and optimize message size.
+</ParamField>
+
+<ParamField path="fullTrackName" type="FullTrackName" required>
+  The fully qualified track name consisting of a namespace tuple and track name.
+</ParamField>
+
+<ParamField path="subscriberPriority" type="number" required>
+  Priority value (0-255) for potential future subscription.
+</ParamField>
+
+<ParamField path="groupOrder" type="GroupOrder" required>
+  Specifies the desired order for group delivery:
+  - `GroupOrder.Original` (0x0): Original order
+  - `GroupOrder.Ascending` (0x1): Ascending order
+  - `GroupOrder.Descending` (0x2): Descending order
+</ParamField>
+
+<ParamField path="forward" type="boolean" required>
+  If `true`, objects would be delivered forward. If `false`, in reverse.
+</ParamField>
+
+<ParamField path="filterType" type="FilterType" required>
+  Filter type for the potential subscription:
+  - `FilterType.NextGroupStart` (0x1): Next available group
+  - `FilterType.LatestObject` (0x2): Latest object
+  - `FilterType.AbsoluteStart` (0x3): From absolute location
+  - `FilterType.AbsoluteRange` (0x4): Specific group range
+</ParamField>
+
+<ParamField path="startLocation" type="Location | undefined">
+  Starting location for `AbsoluteStart` and `AbsoluteRange` filter types.
+</ParamField>
+
+<ParamField path="endGroup" type="bigint | undefined">
+  Ending group for `AbsoluteRange` filter type.
+</ParamField>
+
+<ParamField path="subscribeParameters" type="KeyValuePair[]" required>
+  Parameters that would be used in a subsequent subscription.
+</ParamField>
+
+## Static Factory Methods
+
+### newNextGroupStart
+
+Creates a track status request for the next available group.
+
+```typescript
+static newNextGroupStart(
+  requestId: bigint,
+  trackAlias: bigint,
+  fullTrackName: FullTrackName,
+  subscriberPriority: number,
+  groupOrder: GroupOrder,
+  forward: boolean,
+  subscribeParameters: KeyValuePair[],
+): TrackStatus
+```
+
+**Returns:** `TrackStatus` instance with `FilterType.NextGroupStart`
+
+### newLatestObject
+
+Creates a track status request for the latest available object.
+
+```typescript
+static newLatestObject(
+  requestId: bigint,
+  trackAlias: bigint,
+  fullTrackName: FullTrackName,
+  subscriberPriority: number,
+  groupOrder: GroupOrder,
+  forward: boolean,
+  subscribeParameters: KeyValuePair[],
+): TrackStatus
+```
+
+**Returns:** `TrackStatus` instance with `FilterType.LatestObject`
+
+### newAbsoluteStart
+
+Creates a track status request from a specific location.
+
+```typescript
+static newAbsoluteStart(
+  requestId: bigint,
+  trackAlias: bigint,
+  fullTrackName: FullTrackName,
+  subscriberPriority: number,
+  groupOrder: GroupOrder,
+  forward: boolean,
+  startLocation: Location,
+  subscribeParameters: KeyValuePair[],
+): TrackStatus
+```
+
+<ParamField path="startLocation" type="Location" required>
+  The group and object location to query from
+</ParamField>
+
+**Returns:** `TrackStatus` instance with `FilterType.AbsoluteStart`
+
+### newAbsoluteRange
+
+Creates a track status request for a specific range of groups.
+
+```typescript
+static newAbsoluteRange(
+  requestId: bigint,
+  trackAlias: bigint,
+  fullTrackName: FullTrackName,
+  subscriberPriority: number,
+  groupOrder: GroupOrder,
+  forward: boolean,
+  startLocation: Location,
+  endGroup: bigint,
+  subscribeParameters: KeyValuePair[],
+): TrackStatus
+```
+
+<ParamField path="startLocation" type="Location" required>
+  The group and object location to start from
+</ParamField>
+
+<ParamField path="endGroup" type="bigint" required>
+  The last group to query (inclusive)
+</ParamField>
+
+**Returns:** `TrackStatus` instance with `FilterType.AbsoluteRange`
+
+**Throws:** `Error` if `endGroup < startLocation.group`
+
+## Methods
+
+### serialize
+
+Serializes the TrackStatus message to a frozen byte buffer for transmission.
+
+```typescript
+serialize(): FrozenByteBuffer
+```
+
+**Returns:** `FrozenByteBuffer` containing the serialized message
+
+**Throws:**
+- `Error` if `startLocation` is missing for `AbsoluteStart` or `AbsoluteRange`
+- `Error` if `endGroup` is missing for `AbsoluteRange`
+
+### parsePayload
+
+Deserializes a TrackStatus message from a byte buffer.
+
+```typescript
+static parsePayload(buf: BaseByteBuffer): TrackStatus
+```
+
+<ParamField path="buf" type="BaseByteBuffer" required>
+  Buffer containing the serialized TrackStatus message payload
+</ParamField>
+
+**Returns:** Deserialized `TrackStatus` instance
+
+**Throws:** `Error` if the buffer contains invalid or incomplete data
+
+## Status Response Codes
+
+The server responds with a `TrackStatusOk` message containing one of these status codes:
+
+<ResponseField name="InProgress" type="0x00">
+  Track is actively being published and available for subscription
+</ResponseField>
+
+<ResponseField name="DoesNotExist" type="0x01">
+  Track does not exist or has never existed
+</ResponseField>
+
+<ResponseField name="NotYetBegun" type="0x02">
+  Track is scheduled to exist but has not started yet
+</ResponseField>
+
+<ResponseField name="Finished" type="0x03">
+  Track has completed and no more objects will be published
+</ResponseField>
+
+<ResponseField name="RelayUnavailable" type="0x04">
+  Relay cannot provide status information for this track
+</ResponseField>
+
+## Usage Examples
+
+### Query Track Availability
+
+```typescript
+import { TrackStatus, FullTrackName, GroupOrder } from 'moqtail'
+
+const trackStatus = TrackStatus.newLatestObject(
+  99999n,    // Request ID
+  1000n,     // Track alias
+  FullTrackName.tryNew('video/stream', 'camera1'),
+  128,       // Priority
+  GroupOrder.Original,
+  true,      // Forward
+  []         // No parameters
+)
+
+const serialized = trackStatus.serialize()
+// Send to server
+
+// Handle response
+const response = await receiveTrackStatusOk()
+if (response.statusCode === TrackStatusCode.InProgress) {
+  console.log('Track is available, subscribing...')
+  // Proceed with subscription
+} else if (response.statusCode === TrackStatusCode.DoesNotExist) {
+  console.log('Track not found')
+}
+```
+
+### Check Historical Range
+
+```typescript
+import { TrackStatus, Location } from 'moqtail'
+
+// Check if specific historical data is available
+const trackStatus = TrackStatus.newAbsoluteRange(
+  12345n,
+  2000n,
+  FullTrackName.tryNew('metrics/sensor', 'temperature'),
+  64,
+  GroupOrder.Ascending,
+  true,
+  new Location(1000n, 0n),  // Start at group 1000
+  2000n,                     // End at group 2000
+  []
+)
+
+const response = await queryAndWait(trackStatus)
+if (response.statusCode === TrackStatusCode.InProgress) {
+  console.log('Historical data available')
+  // Can fetch or subscribe to this range
+}
+```
+
+### Parse TrackStatus Response
+
+```typescript
+import { TrackStatus, TrackStatusOk, ByteBuffer } from 'moqtail'
+
+const buf = new ByteBuffer()
+buf.putBytes(incomingData)
+
+const msgType = buf.getVI()
+if (msgType === BigInt(ControlMessageType.TrackStatusOk)) {
+  const msgLength = buf.getU16()
+  const statusOk = TrackStatusOk.parsePayload(buf)
+  
+  console.log(`Track status: ${statusOk.statusCode}`)
+  console.log(`Latest group: ${statusOk.latestGroup}`)
+  console.log(`Latest object: ${statusOk.latestObject}`)
+}
+```
+
+## Use Cases
+
+### Backfill Strategy
+
+Query track status to determine the available historical data before subscribing:
+
+```typescript
+// 1. Query what's available
+const status = TrackStatus.newLatestObject(...)
+const response = await sendAndWait(status)
+
+if (response.statusCode === TrackStatusCode.InProgress) {
+  // 2. Fetch historical data
+  const fetch = new Fetch(
+    requestId,
+    priority,
+    groupOrder,
+    {
+      type: FetchType.StandAlone,
+      props: {
+        fullTrackName,
+        startLocation: new Location(0n, 0n),
+        endLocation: new Location(response.latestGroup, response.latestObject)
+      }
+    },
+    []
+  )
+  
+  // 3. Subscribe for live updates
+  const subscribe = Subscribe.newLatestObject(...)
+}
+```
+
+### Smart Prefetching
+
+Check if upcoming segments are available before a player needs them:
+
+```typescript
+const nextSegment = currentGroup + 10n
+const status = TrackStatus.newAbsoluteStart(
+  requestId,
+  alias,
+  trackName,
+  priority,
+  groupOrder,
+  true,
+  new Location(nextSegment, 0n),
+  []
+)
+
+const response = await sendAndWait(status)
+if (response.statusCode === TrackStatusCode.InProgress) {
+  // Prefetch the segment
+  prefetchSegment(nextSegment)
+}
+```
+
+## Related Types
+
+- [FullTrackName](/api/common-types#fulltrackname) - Track identifier
+- [Location](/api/common-types#location) - Group and object position
+- [FilterType](/api/common-types#filtertype) - Filter options
+- [GroupOrder](/api/common-types#grouporder) - Group delivery order
+- [TrackStatusCode](/api/error-codes#trackstatuscode) - Status response codes
+
+## See Also
+
+- [Subscribe](/api/subscribe) - Subscribe to tracks
+- [Fetch](/api/fetch) - Fetch specific objects

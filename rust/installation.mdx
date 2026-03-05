@@ -1,0 +1,384 @@
+---
+title: Installation
+description: How to install and configure the Moqtail Rust library
+---
+
+# Installation
+
+This guide walks you through installing and configuring the Moqtail Rust library for your MOQT applications.
+
+## Prerequisites
+
+Before installing Moqtail, ensure you have the following:
+
+<Steps>
+  <Step title="Rust toolchain">
+    Install Rust 1.75 or later (2024 edition required):
+    
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+    
+    Verify your installation:
+    
+    ```bash
+    rustc --version
+    cargo --version
+    ```
+  </Step>
+  
+  <Step title="Development tools">
+    Install build essentials for your platform:
+    
+    <CodeGroup>
+    ```bash Ubuntu/Debian
+    sudo apt-get update
+    sudo apt-get install build-essential pkg-config libssl-dev
+    ```
+    
+    ```bash macOS
+    xcode-select --install
+    ```
+    
+    ```bash Windows
+    # Install Visual Studio Build Tools
+    # https://visualstudio.microsoft.com/downloads/
+    ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+## Adding Moqtail to Your Project
+
+### Using Cargo
+
+Add Moqtail to your `Cargo.toml`:
+
+```toml Cargo.toml
+[dependencies]
+moqtail = "0.11.1"
+tokio = { version = "1.0", features = ["full"] }
+```
+
+<Note>
+  Moqtail requires Tokio as its async runtime. Make sure to include it with the `full` feature set.
+</Note>
+
+### Creating a New Project
+
+Create a new Rust project with Moqtail:
+
+```bash
+cargo new my-moqt-app
+cd my-moqt-app
+```
+
+Add the dependencies to your `Cargo.toml`:
+
+```toml Cargo.toml
+[package]
+name = "my-moqt-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+moqtail = "0.11.1"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1.10"
+```
+
+## Project Configuration
+
+### Complete Cargo.toml Example
+
+Here's a comprehensive `Cargo.toml` for a MOQT application:
+
+```toml Cargo.toml
+[package]
+name = "my-moqt-app"
+description = "MOQT streaming application"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+# MOQT protocol library
+moqtail = "0.11.1"
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Byte handling
+bytes = "1.10.1"
+
+# Error handling
+thiserror = "2.0.12"
+
+# Serialization
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+
+# Logging
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+```
+
+## Verifying Your Installation
+
+### Basic Test Program
+
+Create a simple test to verify Moqtail is working:
+
+```rust src/main.rs
+use moqtail::model::common::tuple::{Tuple, TupleField};
+use moqtail::model::data::full_track_name::FullTrackName;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging
+    tracing_subscriber::fmt::init();
+    
+    println!("Moqtail library loaded successfully!");
+    
+    // Create a sample track name
+    let namespace = Tuple::from_utf8_path("test/stream");
+    let track_name = TupleField::from_utf8("video");
+    let full_track = FullTrackName::new(namespace, track_name)?;
+    
+    println!("Created track: {}", full_track);
+    
+    Ok(())
+}
+```
+
+Run the test:
+
+```bash
+cargo run
+```
+
+Expected output:
+
+```
+Moqtail library loaded successfully!
+Created track: test-stream--video
+```
+
+## Building Your Project
+
+### Development Build
+
+Build your project in debug mode:
+
+```bash
+cargo build
+```
+
+### Release Build
+
+Build an optimized release binary:
+
+```bash
+cargo build --release
+```
+
+The compiled binary will be in `target/release/`.
+
+### Running Tests
+
+Run the test suite:
+
+```bash
+cargo test
+```
+
+<Note>
+  Note that doctests are currently disabled in Moqtail. Unit tests are available for all modules.
+</Note>
+
+## Optional Dependencies
+
+Depending on your use case, you may want to add:
+
+### WebTransport Configuration
+
+```toml
+[dependencies]
+wtransport = "0.3"
+```
+
+<Note>
+  Moqtail already includes wtransport as a workspace dependency. Only add this if you need direct access to WebTransport APIs.
+</Note>
+
+### Additional Utilities
+
+```toml
+[dependencies]
+# For async utilities
+futures = "0.3"
+
+# For configuration
+config = "0.14"
+toml = "0.8"
+
+# For CLI applications
+clap = { version = "4.0", features = ["derive"] }
+```
+
+## Environment Setup
+
+### Logging Configuration
+
+Set up logging with environment variables:
+
+```bash
+# Enable debug logging
+export RUST_LOG=debug
+
+# Module-specific logging
+export RUST_LOG=moqtail=debug,my_moqt_app=trace
+```
+
+In your application:
+
+```rust
+use tracing_subscriber;
+
+#[tokio::main]
+async fn main() {
+    // Initialize tracing with environment filter
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+    
+    // Your application code
+}
+```
+
+### Development Tools
+
+Recommended tools for Moqtail development:
+
+```bash
+# Install Rust analyzer for IDE support
+rustup component add rust-analyzer
+
+# Install clippy for linting
+rustup component add clippy
+
+# Install rustfmt for code formatting
+rustup component add rustfmt
+```
+
+Run linting:
+
+```bash
+cargo clippy
+```
+
+Format your code:
+
+```bash
+cargo fmt
+```
+
+## Platform-Specific Notes
+
+### Linux
+
+Moqtail works out of the box on Linux. For optimal performance:
+
+```bash
+# Increase UDP buffer sizes for high-throughput scenarios
+sudo sysctl -w net.core.rmem_max=2500000
+sudo sysctl -w net.core.wmem_max=2500000
+```
+
+### macOS
+
+No special configuration required. Ensure Xcode Command Line Tools are installed:
+
+```bash
+xcode-select --install
+```
+
+### Windows
+
+On Windows, you may need to configure the Windows Firewall to allow QUIC (UDP) traffic on your application's ports.
+
+## Troubleshooting
+
+### Common Issues
+
+<AccordionGroup>
+  <Accordion title="Build fails with linker errors">
+    Ensure you have the required system libraries:
+    
+    ```bash
+    # Ubuntu/Debian
+    sudo apt-get install build-essential libssl-dev pkg-config
+    
+    # macOS
+    xcode-select --install
+    ```
+  </Accordion>
+  
+  <Accordion title="tokio runtime errors">
+    Make sure you're using `#[tokio::main]` or creating a runtime manually:
+    
+    ```rust
+    #[tokio::main]
+    async fn main() {
+        // Your async code
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="wtransport compilation issues">
+    wtransport requires OpenSSL or BoringSSL. Install development headers:
+    
+    ```bash
+    # Ubuntu/Debian
+    sudo apt-get install libssl-dev
+    
+    # macOS (using Homebrew)
+    brew install openssl
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Getting Help
+
+If you encounter issues:
+
+1. Check the [GitHub Issues](https://github.com/moqt/moqtail/issues)
+2. Review the [examples directory](https://github.com/moqt/moqtail/tree/main/examples)
+3. Enable debug logging: `RUST_LOG=debug cargo run`
+
+## Next Steps
+
+Now that you have Moqtail installed:
+
+<CardGroup cols={2}>
+  <Card title="Explore the Model" icon="cube" href="/rust/model">
+    Learn about MOQT protocol data structures
+  </Card>
+  
+  <Card title="Build a Client" icon="laptop" href="/rust/client">
+    Create your first MOQT client application
+  </Card>
+  
+  <Card title="Transport Layer" icon="network-wired" href="/rust/transport">
+    Understand control and data stream handling
+  </Card>
+  
+  <Card title="Deploy a Relay" icon="server" href="/rust/relay">
+    Set up a MOQT relay server
+  </Card>
+</CardGroup>

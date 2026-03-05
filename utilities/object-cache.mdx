@@ -1,0 +1,355 @@
+---
+title: 'Object Cache'
+description: 'In-memory storage for MoqtObject instances with efficient range queries and binary search indexing'
+---
+
+## Overview
+
+The `ObjectCache` interface provides an in-memory index for storing and retrieving `MoqtObject` instances. Objects are keyed by their `Location` (group/object coordinates) and maintained in sorted order for efficient binary search operations.
+
+MOQtail provides two built-in implementations optimized for different use cases:
+
+<CardGroup cols={2}>
+  <Card title="MemoryObjectCache" icon="database">
+    Unlimited in-memory storage with automatic sorting
+  </Card>
+  <Card title="RingBufferObjectCache" icon="rotate">
+    Fixed-size cache with automatic eviction of oldest objects
+  </Card>
+</CardGroup>
+
+## Interface
+
+The `ObjectCache` interface defines the contract for all cache implementations:
+
+```typescript
+export interface ObjectCache {
+  /** Insert a new MoqtObject, preserving sorted order */
+  add(obj: MoqtObject): void
+  
+  /** Return objects whose Location is >= start and < end (end exclusive) */
+  getRange(start?: Location, end?: Location): MoqtObject[]
+  
+  /** Return the object whose Location exactly matches or undefined if absent */
+  getByLocation(location: Location): MoqtObject | undefined
+  
+  /** Current number of cached objects */
+  size(): number
+  
+  /** Remove all cached objects */
+  clear(): void
+}
+```
+
+### Location-Based Indexing
+
+All objects are stored and retrieved by their `Location`, which consists of:
+
+- **`group`**: Group index (e.g., segment, GOP, logical group)
+- **`object`**: Object index within the group (e.g., frame, chunk)
+
+Objects are kept sorted in ascending order by `(groupId, objectId)` to enable efficient binary search operations.
+
+## MemoryObjectCache
+
+The `MemoryObjectCache` provides unlimited in-memory storage with automatic sorting and binary search indexing.
+
+### Basic Usage
+
+```typescript
+import { MemoryObjectCache } from '@moqtail/moqtail-ts'
+import { Location } from '@moqtail/moqtail-ts'
+
+// Create a new memory cache
+const cache = new MemoryObjectCache()
+
+// Add objects - automatically sorted by location
+cache.add(videoFrame1) // groupId: 1, objectId: 0
+cache.add(videoFrame2) // groupId: 1, objectId: 1
+cache.add(videoFrame3) // groupId: 2, objectId: 0
+
+console.log(`Cache size: ${cache.size()}`) // 3
+```
+
+### Range Queries
+
+Retrieve objects within a specific range using `Location` boundaries:
+
+```typescript
+// Get all objects in group 1
+const startLoc = new Location(1, 0)
+const endLoc = new Location(2, 0) // Exclusive
+const group1Objects = cache.getRange(startLoc, endLoc)
+
+// Get all objects from a specific point onwards
+const fromLocation = new Location(1, 5)
+const remainingObjects = cache.getRange(fromLocation)
+
+// Get all objects
+const allObjects = cache.getRange()
+```
+
+### Exact Lookups
+
+```typescript
+// Retrieve a specific object by location
+const location = new Location(1, 0)
+const object = cache.getByLocation(location)
+
+if (object) {
+  console.log(`Found object: group ${object.groupId}, object ${object.objectId}`)
+} else {
+  console.log('Object not found in cache')
+}
+```
+
+### Cache Management
+
+```typescript
+// Check cache size
+if (cache.size() > 1000) {
+  console.log('Cache is getting large')
+}
+
+// Clear all objects
+cache.clear()
+console.log(`Cache size after clear: ${cache.size()}`) // 0
+```
+
+<Note>
+  The `MemoryObjectCache` has no size limits and will grow unbounded. Use `RingBufferObjectCache` if you need automatic eviction.
+</Note>
+
+## RingBufferObjectCache
+
+The `RingBufferObjectCache` provides a fixed-size cache that automatically evicts the oldest objects when capacity is reached.
+
+### Initialization
+
+```typescript
+import { RingBufferObjectCache } from '@moqtail/moqtail-ts'
+
+// Create a ring buffer with capacity for 100 objects
+const cache = new RingBufferObjectCache(100)
+
+// Default capacity is 100 if not specified
+const defaultCache = new RingBufferObjectCache()
+```
+
+### Automatic Eviction
+
+```typescript
+const cache = new RingBufferObjectCache(3)
+
+// Add objects
+cache.add(object1) // Cache: [object1]
+cache.add(object2) // Cache: [object1, object2]
+cache.add(object3) // Cache: [object1, object2, object3]
+
+// Adding a 4th object evicts the oldest
+cache.add(object4) // Cache: [object2, object3, object4]
+
+console.log(cache.size()) // Still 3
+```
+
+### Use Cases
+
+The ring buffer cache is ideal for:
+
+- **Live streaming** - Keep only recent frames in memory
+- **Memory-constrained environments** - Prevent unbounded growth
+- **Rolling window buffering** - Maintain a fixed-size window of content
+
+```typescript
+// Buffering live video frames with a 5-second window
+const framesPerSecond = 30
+const windowSeconds = 5
+const frameCache = new RingBufferObjectCache(framesPerSecond * windowSeconds)
+
+// As new frames arrive, old ones are automatically evicted
+for (const frame of liveVideoStream) {
+  frameCache.add(frame)
+}
+```
+
+## Integration with Content Sources
+
+Object caches are commonly used with `StaticContentSource` for on-demand content delivery:
+
+### Static Content
+
+```typescript
+import { StaticContentSource, MemoryObjectCache } from '@moqtail/moqtail-ts'
+import { FullTrackName, ObjectForwardingPreference } from '@moqtail/moqtail-ts'
+
+// Create and populate cache with file chunks
+const fileCache = new MemoryObjectCache()
+
+// Add file chunks as objects
+for (let i = 0; i < fileChunks.length; i++) {
+  const object = new MoqtObject({
+    groupId: 0n,
+    objectId: BigInt(i),
+    payload: fileChunks[i],
+    objectStatus: ObjectStatus.Normal,
+    // ... other fields
+  })
+  fileCache.add(object)
+}
+
+// Create static content source with cache
+const contentSource = new StaticContentSource(fileCache)
+
+// Create track for on-demand delivery
+const fileTrack: Track = {
+  fullTrackName: FullTrackName.tryNew('files/documents', 'presentation.pdf'),
+  trackAlias: 2n,
+  forwardingPreference: ObjectForwardingPreference.Datagram,
+  contentSource,
+}
+
+client.addOrUpdateTrack(fileTrack)
+```
+
+### Hybrid Content
+
+```typescript
+import { HybridContentSource, RingBufferObjectCache } from '@moqtail/moqtail-ts'
+
+// Create cache for recent historical data
+const recentCache = new RingBufferObjectCache(300) // Last 10 seconds at 30fps
+
+// Hybrid source supports both live streaming and historical fetch
+const hybridSource = new HybridContentSource({
+  liveStream: videoObjectStream,
+  cache: recentCache,
+})
+
+// Live objects are automatically added to cache
+// Subscribers can fetch recent history or subscribe to live stream
+```
+
+## Performance Characteristics
+
+### Time Complexity
+
+Both implementations use binary search for efficient operations:
+
+<ParamField path="add" type="O(n)">
+  Insertion requires finding the correct position (O(log n)) and inserting into array (O(n))
+</ParamField>
+
+<ParamField path="getRange" type="O(log n + k)">
+  Binary search to find range bounds (O(log n)) plus copying k matching objects
+</ParamField>
+
+<ParamField path="getByLocation" type="O(log n)">
+  Binary search for exact match
+</ParamField>
+
+<ParamField path="size" type="O(1)">
+  Constant-time array length check
+</ParamField>
+
+<ParamField path="clear" type="O(1)">
+  Replaces array reference
+</ParamField>
+
+### Space Complexity
+
+<ParamField path="MemoryObjectCache" type="O(n)">
+  Stores all n objects without bounds
+</ParamField>
+
+<ParamField path="RingBufferObjectCache" type="O(min(n, maxSize))">
+  Stores at most maxSize objects
+</ParamField>
+
+## Thread Safety
+
+<Warning>
+  ObjectCache implementations are **not thread-safe**. Concurrent mutation from web workers or multiple threads is not supported. Callers must implement their own synchronization if needed.
+</Warning>
+
+## Example: Video-on-Demand System
+
+Complete example of a VOD system using object cache:
+
+```typescript
+import {
+  MOQtailClient,
+  MemoryObjectCache,
+  StaticContentSource,
+  Track,
+  FullTrackName,
+  ObjectForwardingPreference,
+  MoqtObject,
+  ObjectStatus,
+} from '@moqtail/moqtail-ts'
+
+async function createVODTrack(videoId: string, segments: Uint8Array[]) {
+  // Create cache for VOD content
+  const vodCache = new MemoryObjectCache()
+
+  // Populate cache with video segments
+  for (let groupId = 0; groupId < segments.length; groupId++) {
+    const segment = segments[groupId]
+    
+    // Each segment is a group containing one object
+    const object = new MoqtObject({
+      groupId: BigInt(groupId),
+      objectId: 0n,
+      payload: segment,
+      objectStatus: ObjectStatus.Normal,
+      publisherPriority: 0,
+    })
+    
+    vodCache.add(object)
+    
+    // Add end-of-group marker
+    const eogMarker = new MoqtObject({
+      groupId: BigInt(groupId),
+      objectId: 1n,
+      objectStatus: ObjectStatus.EndOfGroup,
+    })
+    vodCache.add(eogMarker)
+  }
+
+  // Add end-of-track marker
+  const endMarker = new MoqtObject({
+    groupId: BigInt(segments.length),
+    objectId: 0n,
+    objectStatus: ObjectStatus.EndOfTrack,
+  })
+  vodCache.add(endMarker)
+
+  // Create static content source
+  const contentSource = new StaticContentSource(vodCache)
+
+  // Create track
+  const track: Track = {
+    fullTrackName: FullTrackName.tryNew('vod/library', videoId),
+    trackAlias: 1n,
+    forwardingPreference: ObjectForwardingPreference.Subgroup,
+    contentSource,
+  }
+
+  return track
+}
+
+// Usage
+const client = await MOQtailClient.new(clientSetup, webTransport)
+const vodTrack = await createVODTrack('movie-123', videoSegments)
+client.addOrUpdateTrack(vodTrack)
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Content Sources" href="/concepts/content-sources">
+    Learn about LiveContentSource, StaticContentSource, and HybridContentSource
+  </Card>
+  <Card title="Publishing" href="/publisher/static-content">
+    Guide to publishing tracks with object caches
+  </Card>
+</CardGroup>

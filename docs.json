@@ -1,122 +1,151 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Moqtail",
+  "theme": "palm",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#cc6e32",
+    "light": "#1d2427",
+    "dark": "#e7e6e3"
   },
-  "favicon": "/favicon.svg",
+  "logo": {
+    "light": "https://media.brand.dev/992f43cc-a5b2-4dac-82bf-b6265704cb33.svg",
+    "dark": "https://media.brand.dev/992f43cc-a5b2-4dac-82bf-b6265704cb33.svg"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/moqtail/moqtail"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/moqtail/moqtail"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Getting Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "installation",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/moqt-protocol",
+              "concepts/tracks-and-objects",
+              "concepts/publisher-subscriber",
+              "concepts/content-sources"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Publisher Guide",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "publisher/creating-tracks",
+              "publisher/live-streaming",
+              "publisher/static-content",
+              "publisher/hybrid-content",
+              "publisher/namespaces"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Subscriber Guide",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "subscriber/subscribing",
+              "subscriber/fetching",
+              "subscriber/playout-buffer",
+              "subscriber/track-discovery"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "utilities/object-cache",
+              "utilities/network-telemetry",
+              "utilities/clock-sync"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/relay-server",
+              "deployment/webtransport-setup"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Client",
             "pages": [
-              "api-reference/introduction"
+              "api/moqtail-client",
+              "api/client-setup"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Tracks & Content",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/track",
+              "api/content-source",
+              "api/moqt-object",
+              "api/object-cache"
+            ]
+          },
+          {
+            "group": "Control Messages",
+            "pages": [
+              "api/subscribe",
+              "api/fetch",
+              "api/publish-namespace",
+              "api/track-status"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/playout-buffer",
+              "api/telemetry",
+              "api/clock-normalizer"
+            ]
+          },
+          {
+            "group": "Data Models",
+            "pages": [
+              "api/common-types",
+              "api/error-codes"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Rust Library",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "rust/introduction",
+              "rust/installation"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "rust/client",
+              "rust/relay",
+              "rust/model",
+              "rust/transport"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

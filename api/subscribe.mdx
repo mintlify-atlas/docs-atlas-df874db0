@@ -1,0 +1,281 @@
+---
+title: "Subscribe"
+description: "Subscribe to a track to receive objects over time"
+---
+
+## Overview
+
+The `Subscribe` class represents a MOQT Subscribe control message. It allows clients to request streaming objects from a specific track, with configurable filtering, priority, and delivery ordering options.
+
+## Class Definition
+
+```typescript
+class Subscribe {
+  constructor(
+    public requestId: bigint,
+    public fullTrackName: FullTrackName,
+    public subscriberPriority: number,
+    public groupOrder: GroupOrder,
+    public forward: boolean,
+    public filterType: FilterType,
+    public startLocation: Location | undefined,
+    public endGroup: bigint | undefined,
+    public parameters: KeyValuePair[],
+  )
+}
+```
+
+## Properties
+
+<ParamField path="requestId" type="bigint" required>
+  Unique identifier for this subscription request.
+</ParamField>
+
+<ParamField path="fullTrackName" type="FullTrackName" required>
+  The fully qualified track name consisting of a namespace tuple and track name.
+</ParamField>
+
+<ParamField path="subscriberPriority" type="number" required>
+  Priority value (0-255) for this subscription. Higher priority subscriptions receive objects first.
+</ParamField>
+
+<ParamField path="groupOrder" type="GroupOrder" required>
+  Specifies the order in which groups should be delivered:
+  - `GroupOrder.Original` (0x0): Original order
+  - `GroupOrder.Ascending` (0x1): Ascending order
+  - `GroupOrder.Descending` (0x2): Descending order
+</ParamField>
+
+<ParamField path="forward" type="boolean" required>
+  If `true`, objects are delivered forward from the start location. If `false`, objects are delivered in reverse.
+</ParamField>
+
+<ParamField path="filterType" type="FilterType" required>
+  Determines which objects to receive:
+  - `FilterType.NextGroupStart` (0x1): Start from the next available group
+  - `FilterType.LatestObject` (0x2): Start from the latest object
+  - `FilterType.AbsoluteStart` (0x3): Start from an absolute location
+  - `FilterType.AbsoluteRange` (0x4): Request a specific range of groups
+</ParamField>
+
+<ParamField path="startLocation" type="Location | undefined">
+  Starting location for `AbsoluteStart` and `AbsoluteRange` filter types. Contains group and object indices.
+</ParamField>
+
+<ParamField path="endGroup" type="bigint | undefined">
+  Ending group for `AbsoluteRange` filter type. Must be greater than or equal to the start group.
+</ParamField>
+
+<ParamField path="parameters" type="KeyValuePair[]" required>
+  Additional protocol parameters for the subscription.
+</ParamField>
+
+## Static Factory Methods
+
+### newNextGroupStart
+
+Creates a subscription that starts from the next available group.
+
+```typescript
+static newNextGroupStart(
+  requestId: bigint,
+  fullTrackName: FullTrackName,
+  subscriberPriority: number,
+  groupOrder: GroupOrder,
+  forward: boolean,
+  parameters: KeyValuePair[],
+): Subscribe
+```
+
+<ParamField path="requestId" type="bigint" required>
+  Unique request identifier
+</ParamField>
+
+<ParamField path="fullTrackName" type="FullTrackName" required>
+  Track to subscribe to
+</ParamField>
+
+<ParamField path="subscriberPriority" type="number" required>
+  Priority level (0-255)
+</ParamField>
+
+<ParamField path="groupOrder" type="GroupOrder" required>
+  Delivery order for groups
+</ParamField>
+
+<ParamField path="forward" type="boolean" required>
+  Direction of delivery
+</ParamField>
+
+<ParamField path="parameters" type="KeyValuePair[]" required>
+  Additional parameters
+</ParamField>
+
+**Returns:** `Subscribe` instance with `FilterType.NextGroupStart`
+
+### newLatestObject
+
+Creates a subscription that starts from the latest available object.
+
+```typescript
+static newLatestObject(
+  requestId: bigint,
+  fullTrackName: FullTrackName,
+  subscriberPriority: number,
+  groupOrder: GroupOrder,
+  forward: boolean,
+  parameters: KeyValuePair[],
+): Subscribe
+```
+
+**Returns:** `Subscribe` instance with `FilterType.LatestObject`
+
+### newAbsoluteStart
+
+Creates a subscription that starts from a specific location and continues indefinitely.
+
+```typescript
+static newAbsoluteStart(
+  requestId: bigint,
+  fullTrackName: FullTrackName,
+  subscriberPriority: number,
+  groupOrder: GroupOrder,
+  forward: boolean,
+  startLocation: Location,
+  parameters: KeyValuePair[],
+): Subscribe
+```
+
+<ParamField path="startLocation" type="Location" required>
+  The group and object location to start from
+</ParamField>
+
+**Returns:** `Subscribe` instance with `FilterType.AbsoluteStart`
+
+### newAbsoluteRange
+
+Creates a subscription for a specific range of groups.
+
+```typescript
+static newAbsoluteRange(
+  requestId: bigint,
+  fullTrackName: FullTrackName,
+  subscriberPriority: number,
+  groupOrder: GroupOrder,
+  forward: boolean,
+  startLocation: Location,
+  endGroup: bigint,
+  parameters: KeyValuePair[],
+): Subscribe
+```
+
+<ParamField path="startLocation" type="Location" required>
+  The group and object location to start from
+</ParamField>
+
+<ParamField path="endGroup" type="bigint" required>
+  The last group to receive (inclusive)
+</ParamField>
+
+**Returns:** `Subscribe` instance with `FilterType.AbsoluteRange`
+
+**Throws:** `Error` if `endGroup < startLocation.group`
+
+## Methods
+
+### serialize
+
+Serializes the Subscribe message to a frozen byte buffer for transmission.
+
+```typescript
+serialize(): FrozenByteBuffer
+```
+
+**Returns:** `FrozenByteBuffer` containing the serialized message
+
+**Throws:**
+- `Error` if `startLocation` is missing for `AbsoluteStart` or `AbsoluteRange`
+- `Error` if `endGroup` is missing for `AbsoluteRange`
+
+### parsePayload
+
+Deserializes a Subscribe message from a byte buffer.
+
+```typescript
+static parsePayload(buf: BaseByteBuffer): Subscribe
+```
+
+<ParamField path="buf" type="BaseByteBuffer" required>
+  Buffer containing the serialized Subscribe message payload
+</ParamField>
+
+**Returns:** Deserialized `Subscribe` instance
+
+**Throws:** `Error` if the buffer contains invalid or incomplete data
+
+## Usage Examples
+
+### Subscribe to Latest Content
+
+```typescript
+import { Subscribe, FullTrackName, GroupOrder, KeyValuePair } from 'moqtail'
+
+const subscribe = Subscribe.newLatestObject(
+  12345n,
+  FullTrackName.tryNew('video/stream', 'track1'),
+  128,  // Priority
+  GroupOrder.Original,
+  true, // Forward
+  []    // No additional parameters
+)
+
+const serialized = subscribe.serialize()
+// Send serialized message to server
+```
+
+### Subscribe to Specific Range
+
+```typescript
+import { Subscribe, Location } from 'moqtail'
+
+const subscribe = Subscribe.newAbsoluteRange(
+  67890n,
+  FullTrackName.tryNew('audio/stream', 'track2'),
+  64,
+  GroupOrder.Ascending,
+  true,
+  new Location(100n, 0n), // Start at group 100, object 0
+  200n,                    // End at group 200
+  [KeyValuePair.tryNewVarInt(0, 1)]
+)
+```
+
+### Parse Incoming Subscribe
+
+```typescript
+import { Subscribe, ByteBuffer } from 'moqtail'
+
+const buf = new ByteBuffer()
+buf.putBytes(incomingData)
+
+// Skip message type and read payload length
+const msgType = buf.getVI()
+const msgLength = buf.getU16()
+
+const subscribe = Subscribe.parsePayload(buf)
+console.log(`Subscribe to: ${subscribe.fullTrackName.toString()}`)
+console.log(`Priority: ${subscribe.subscriberPriority}`)
+```
+
+## Related Types
+
+- [FullTrackName](/api/common-types#fulltrackname) - Track identifier
+- [Location](/api/common-types#location) - Group and object position
+- [KeyValuePair](/api/common-types#keyvaluepair) - Protocol parameters
+- [FilterType](/api/common-types#filtertype) - Subscription filter options
+- [GroupOrder](/api/common-types#grouporder) - Group delivery order
+
+## See Also
+
+- [Fetch](/api/fetch) - Request specific objects without subscribing
+- [TrackStatus](/api/track-status) - Query track availability

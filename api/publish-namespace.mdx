@@ -1,0 +1,231 @@
+---
+title: "PublishNamespace"
+description: "Announce a namespace to enable track publishing"
+---
+
+## Overview
+
+The `PublishNamespace` class represents a MOQT PublishNamespace control message (formerly known as "Announce"). It allows publishers to declare their intent to publish tracks within a specific namespace, along with any associated parameters.
+
+## Class Definition
+
+```typescript
+class PublishNamespace {
+  constructor(
+    public readonly requestId: bigint,
+    public readonly trackNamespace: Tuple,
+    public readonly parameters: KeyValuePair[],
+  )
+}
+```
+
+## Properties
+
+<ParamField path="requestId" type="bigint" required>
+  Unique identifier for this publish namespace request. Used to correlate with PublishNamespaceOk or PublishNamespaceError responses.
+</ParamField>
+
+<ParamField path="trackNamespace" type="Tuple" required>
+  The namespace tuple that identifies the collection of tracks. Typically a hierarchical path like `video/conference/room1`.
+</ParamField>
+
+<ParamField path="parameters" type="KeyValuePair[]" required>
+  Additional protocol parameters for the namespace announcement. Can include authorization tokens, capabilities, or custom metadata.
+</ParamField>
+
+## Methods
+
+### getType
+
+Returns the control message type identifier.
+
+```typescript
+getType(): ControlMessageType
+```
+
+**Returns:** `ControlMessageType.PublishNamespace`
+
+### serialize
+
+Serializes the PublishNamespace message to a frozen byte buffer for transmission.
+
+```typescript
+serialize(): FrozenByteBuffer
+```
+
+**Returns:** `FrozenByteBuffer` containing the serialized message
+
+**Throws:** `LengthExceedsMaxError` if the payload exceeds 65535 bytes
+
+### parsePayload
+
+Deserializes a PublishNamespace message from a byte buffer.
+
+```typescript
+static parsePayload(buf: BaseByteBuffer): PublishNamespace
+```
+
+<ParamField path="buf" type="BaseByteBuffer" required>
+  Buffer containing the serialized PublishNamespace message payload
+</ParamField>
+
+**Returns:** Deserialized `PublishNamespace` instance
+
+**Throws:** `NotEnoughBytesError` if the buffer doesn't contain enough data
+
+## Usage Examples
+
+### Announce a Namespace
+
+```typescript
+import { PublishNamespace, Tuple, KeyValuePair } from 'moqtail'
+
+// Announce a video streaming namespace
+const publishNs = new PublishNamespace(
+  12345n,
+  Tuple.fromUtf8Path('video/livestream/channel42'),
+  [
+    KeyValuePair.tryNewVarInt(0, 10),  // Parameter type 0, value 10
+    KeyValuePair.tryNewBytes(1, new TextEncoder().encode('auth-token-here'))
+  ]
+)
+
+const serialized = publishNs.serialize()
+// Send serialized message to server
+```
+
+### Announce Without Parameters
+
+```typescript
+import { PublishNamespace, Tuple } from 'moqtail'
+
+const publishNs = new PublishNamespace(
+  67890n,
+  Tuple.fromUtf8Path('audio/podcast/episode123'),
+  []  // No additional parameters
+)
+```
+
+### Parse Incoming PublishNamespace
+
+```typescript
+import { PublishNamespace, ByteBuffer } from 'moqtail'
+
+const buf = new ByteBuffer()
+buf.putBytes(incomingData)
+
+// Skip message type and read payload length
+const msgType = buf.getVI()
+const msgLength = buf.getU16()
+
+const publishNs = PublishNamespace.parsePayload(buf.freeze())
+
+console.log(`Namespace: ${publishNs.trackNamespace.toUtf8Path()}`)
+console.log(`Request ID: ${publishNs.requestId}`)
+console.log(`Parameters: ${publishNs.parameters.length}`)
+```
+
+### Handle Server Response
+
+```typescript
+import { PublishNamespace, PublishNamespaceOk } from 'moqtail'
+
+// Send announcement
+const publishNs = new PublishNamespace(
+  12345n,
+  Tuple.fromUtf8Path('video/stream'),
+  []
+)
+
+await sendMessage(publishNs.serialize())
+
+// Wait for response
+const response = await receiveMessage()
+if (response.type === ControlMessageType.PublishNamespaceOk) {
+  console.log('Namespace announced successfully')
+  // Can now publish tracks in this namespace
+} else if (response.type === ControlMessageType.PublishNamespaceError) {
+  console.error(`Announcement failed: ${response.errorCode}`)
+}
+```
+
+## Namespace Hierarchy
+
+Namespaces are hierarchical and typically organized by content type and specificity:
+
+```typescript
+// Organization level
+Tuple.fromUtf8Path('mycompany')
+
+// Service level
+Tuple.fromUtf8Path('mycompany/videoconf')
+
+// Session level
+Tuple.fromUtf8Path('mycompany/videoconf/meeting-uuid')
+
+// Participant level
+Tuple.fromUtf8Path('mycompany/videoconf/meeting-uuid/user123')
+```
+
+Within each namespace, you can publish multiple tracks (video, audio, metadata, etc.).
+
+## Error Codes
+
+The server may respond with a `PublishNamespaceError` message containing one of these error codes:
+
+<ResponseField name="InternalError" type="0x0">
+  Server encountered an internal error
+</ResponseField>
+
+<ResponseField name="Unauthorized" type="0x1">
+  Client is not authorized to publish to this namespace
+</ResponseField>
+
+<ResponseField name="Timeout" type="0x2">
+  Request timed out
+</ResponseField>
+
+<ResponseField name="NotSupported" type="0x3">
+  Server does not support publishing to this namespace
+</ResponseField>
+
+<ResponseField name="Uninterested" type="0x4">
+  Server has no subscribers interested in this namespace
+</ResponseField>
+
+<ResponseField name="MalformedAuthToken" type="0x10">
+  Authorization token is malformed
+</ResponseField>
+
+<ResponseField name="UnknownAuthTokenAlias" type="0x11">
+  Referenced auth token alias is unknown
+</ResponseField>
+
+<ResponseField name="ExpiredAuthToken" type="0x12">
+  Authorization token has expired
+</ResponseField>
+
+## Best Practices
+
+<Warning>
+  Always wait for a `PublishNamespaceOk` response before attempting to publish tracks within the namespace.
+</Warning>
+
+<Tip>
+  Use meaningful, hierarchical namespace structures to enable efficient routing and authorization.
+</Tip>
+
+<Note>
+  The namespace does not include the individual track names. Use `FullTrackName` to combine the namespace with a track name when publishing.
+</Note>
+
+## Related Types
+
+- [Tuple](/api/common-types#tuple) - Hierarchical namespace representation
+- [KeyValuePair](/api/common-types#keyvaluepair) - Protocol parameters
+- [FullTrackName](/api/common-types#fulltrackname) - Complete track identifier
+
+## See Also
+
+- [SubscribeNamespace](/api/subscribe-namespace) - Subscribe to namespace announcements
+- [Publish](/api/publish) - Publish individual tracks

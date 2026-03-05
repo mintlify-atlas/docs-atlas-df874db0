@@ -1,0 +1,362 @@
+---
+title: "Network Telemetry"
+description: "Monitor network performance and throughput metrics"
+---
+
+## Overview
+
+The `NetworkTelemetry` class provides real-time monitoring of network performance metrics. It tracks latency and throughput over a sliding time window, enabling applications to make informed decisions about buffer sizing, bitrate adaptation, and quality adjustments.
+
+## Class Definition
+
+```typescript
+class NetworkTelemetry {
+  constructor(windowMs: number = 1000)
+  
+  push(event: { latency: number; size: number }): void
+  
+  get throughput(): number
+  get latency(): number
+}
+```
+
+## Constructor
+
+<ParamField path="windowMs" type="number" default="1000">
+  The time window in milliseconds over which metrics are calculated. Events older than this window are automatically discarded.
+</ParamField>
+
+```typescript
+// Default 1 second window
+const telemetry = new NetworkTelemetry()
+
+// Custom 5 second window
+const telemetry = new NetworkTelemetry(5000)
+```
+
+## Methods
+
+### push
+
+Records a network event (typically a received object or packet).
+
+```typescript
+push(event: { latency: number; size: number }): void
+```
+
+<ParamField path="event.latency" type="number" required>
+  The latency in milliseconds for this event (e.g., time from request to receipt).
+</ParamField>
+
+<ParamField path="event.size" type="number" required>
+  The size in bytes of the received data.
+</ParamField>
+
+```typescript
+telemetry.push({
+  latency: 45,    // 45ms latency
+  size: 8192      // 8KB received
+})
+```
+
+## Properties
+
+### throughput
+
+Returns the current throughput in bytes per second, calculated over the sliding window.
+
+```typescript
+get throughput(): number
+```
+
+**Returns:** Throughput in bytes/second
+
+```typescript
+const bps = telemetry.throughput
+const kbps = bps / 1024
+const mbps = kbps / 1024
+
+console.log(`Throughput: ${mbps.toFixed(2)} Mbps`)
+```
+
+### latency
+
+Returns the average latency in milliseconds over the sliding window.
+
+```typescript
+get latency(): number
+```
+
+**Returns:** Average latency in milliseconds, or `0` if no events are in the window
+
+```typescript
+const avgLatency = telemetry.latency
+console.log(`Average latency: ${avgLatency.toFixed(1)}ms`)
+```
+
+## Usage Examples
+
+### Basic Monitoring
+
+Track performance metrics for MOQT object delivery:
+
+```typescript
+import { NetworkTelemetry } from 'moqtail/util'
+
+const telemetry = new NetworkTelemetry(1000)  // 1 second window
+
+// Record each object arrival
+subscription.onObject((object) => {
+  const latency = Date.now() - object.sentTimestamp
+  const size = object.payload.length
+  
+  telemetry.push({ latency, size })
+  
+  // Log current metrics
+  console.log(`Throughput: ${(telemetry.throughput / 1024).toFixed(1)} KB/s`)
+  console.log(`Latency: ${telemetry.latency.toFixed(1)}ms`)
+})
+```
+
+### Adaptive Bitrate Selection
+
+Adjust video quality based on network conditions:
+
+```typescript
+import { NetworkTelemetry } from 'moqtail/util'
+
+const telemetry = new NetworkTelemetry(2000)  // 2 second window
+let currentBitrate = 2_000_000  // 2 Mbps
+
+function adaptBitrate() {
+  const throughputBps = telemetry.throughput * 8  // Convert to bits/sec
+  const avgLatency = telemetry.latency
+  
+  // Increase quality if bandwidth is available
+  if (throughputBps > currentBitrate * 1.5 && avgLatency < 50) {
+    currentBitrate = Math.min(currentBitrate * 1.2, 5_000_000)
+    console.log(`Increasing bitrate to ${currentBitrate / 1_000_000}Mbps`)
+  }
+  
+  // Decrease quality if network is struggling
+  if (throughputBps < currentBitrate * 0.8 || avgLatency > 200) {
+    currentBitrate = Math.max(currentBitrate * 0.8, 500_000)
+    console.log(`Decreasing bitrate to ${currentBitrate / 1_000_000}Mbps`)
+  }
+}
+
+// Check every 5 seconds
+setInterval(adaptBitrate, 5000)
+```
+
+### Buffer Management
+
+Adjust playout buffer size based on network stability:
+
+```typescript
+import { NetworkTelemetry } from 'moqtail/util'
+
+class AdaptiveBuffer {
+  private telemetry: NetworkTelemetry
+  private bufferTarget: number = 500  // ms
+  
+  constructor() {
+    this.telemetry = new NetworkTelemetry(3000)
+  }
+  
+  onObjectReceived(latency: number, size: number) {
+    this.telemetry.push({ latency, size })
+    this.adjustBuffer()
+  }
+  
+  private adjustBuffer() {
+    const avgLatency = this.telemetry.latency
+    const jitter = this.calculateJitter()
+    
+    // Increase buffer if network is unstable
+    if (jitter > 50 || avgLatency > 150) {
+      this.bufferTarget = Math.min(this.bufferTarget + 50, 2000)
+      console.log(`Buffer increased to ${this.bufferTarget}ms`)
+    }
+    
+    // Decrease buffer if network is stable
+    if (jitter < 20 && avgLatency < 50) {
+      this.bufferTarget = Math.max(this.bufferTarget - 50, 200)
+      console.log(`Buffer decreased to ${this.bufferTarget}ms`)
+    }
+  }
+  
+  private calculateJitter(): number {
+    // Simplified jitter calculation
+    // Real implementation would track variance
+    return Math.abs(this.telemetry.latency - 100)
+  }
+}
+```
+
+### Performance Dashboard
+
+Create a real-time performance monitoring dashboard:
+
+```typescript
+import { NetworkTelemetry } from 'moqtail/util'
+
+class PerformanceDashboard {
+  private telemetry: NetworkTelemetry
+  private samples: Array<{ time: number; latency: number; throughput: number }> = []
+  
+  constructor() {
+    this.telemetry = new NetworkTelemetry(1000)
+    
+    // Sample metrics every second
+    setInterval(() => this.recordSample(), 1000)
+  }
+  
+  recordEvent(latency: number, size: number) {
+    this.telemetry.push({ latency, size })
+  }
+  
+  private recordSample() {
+    this.samples.push({
+      time: Date.now(),
+      latency: this.telemetry.latency,
+      throughput: this.telemetry.throughput
+    })
+    
+    // Keep last 60 samples (1 minute)
+    if (this.samples.length > 60) {
+      this.samples.shift()
+    }
+  }
+  
+  getStats() {
+    const latencies = this.samples.map(s => s.latency)
+    const throughputs = this.samples.map(s => s.throughput)
+    
+    return {
+      current: {
+        latency: this.telemetry.latency,
+        throughput: this.telemetry.throughput
+      },
+      min: {
+        latency: Math.min(...latencies),
+        throughput: Math.min(...throughputs)
+      },
+      max: {
+        latency: Math.max(...latencies),
+        throughput: Math.max(...throughputs)
+      },
+      avg: {
+        latency: latencies.reduce((a, b) => a + b, 0) / latencies.length,
+        throughput: throughputs.reduce((a, b) => a + b, 0) / throughputs.length
+      }
+    }
+  }
+  
+  render() {
+    const stats = this.getStats()
+    console.log(`
+=== Network Performance ===
+Current:
+  Latency: ${stats.current.latency.toFixed(1)}ms
+  Throughput: ${(stats.current.throughput / 1024 / 1024).toFixed(2)} MB/s
+  
+Last Minute:
+  Latency: ${stats.min.latency.toFixed(1)}ms - ${stats.max.latency.toFixed(1)}ms (avg: ${stats.avg.latency.toFixed(1)}ms)
+  Throughput: ${(stats.min.throughput / 1024 / 1024).toFixed(2)} - ${(stats.max.throughput / 1024 / 1024).toFixed(2)} MB/s (avg: ${(stats.avg.throughput / 1024 / 1024).toFixed(2)} MB/s)
+    `)
+  }
+}
+
+// Usage
+const dashboard = new PerformanceDashboard()
+
+subscription.onObject((object) => {
+  dashboard.recordEvent(
+    Date.now() - object.sentTimestamp,
+    object.payload.length
+  )
+})
+
+setInterval(() => dashboard.render(), 5000)
+```
+
+## Integration with Subscribe
+
+```typescript
+import { Subscribe, NetworkTelemetry } from 'moqtail'
+
+const telemetry = new NetworkTelemetry(1000)
+const subscription = Subscribe.newLatestObject(
+  requestId,
+  fullTrackName,
+  priority,
+  groupOrder,
+  true,
+  []
+)
+
+let requestTime: number
+
+// Track request sent
+subscription.onRequest(() => {
+  requestTime = Date.now()
+})
+
+// Track object received
+subscription.onObject((object) => {
+  const latency = Date.now() - requestTime
+  const size = object.payload.length
+  
+  telemetry.push({ latency, size })
+  
+  // Make decisions based on metrics
+  if (telemetry.latency > 200) {
+    console.warn('High latency detected')
+  }
+  
+  if (telemetry.throughput < 100_000) {  // < 100 KB/s
+    console.warn('Low throughput detected')
+  }
+})
+```
+
+## Window Size Considerations
+
+<Tip>
+  **Short windows (500-1000ms):** Respond quickly to network changes, useful for adaptive bitrate algorithms.
+</Tip>
+
+<Tip>
+  **Medium windows (2000-5000ms):** Balance between responsiveness and stability, good for general monitoring.
+</Tip>
+
+<Tip>
+  **Long windows (5000-10000ms):** Smooth out short-term variations, suitable for long-term trend analysis.
+</Tip>
+
+## Best Practices
+
+<Warning>
+  **Don't sample too frequently:** Checking metrics every few hundred milliseconds is sufficient. Checking more often wastes resources without providing better information.
+</Warning>
+
+<Note>
+  **Calculate derived metrics:** Convert raw throughput to Mbps or MB/s for easier interpretation: `(throughput * 8) / 1_000_000` for Mbps.
+</Note>
+
+<Tip>
+  **Combine with other signals:** Use telemetry alongside buffer levels, frame drops, and user experience metrics for comprehensive monitoring.
+</Tip>
+
+## Performance Characteristics
+
+- **Memory:** O(n) where n is the number of events within the window
+- **Time Complexity:** O(1) for `push()`, O(n) for `throughput` and `latency` (due to automatic cleanup)
+- **Overhead:** Minimal, suitable for high-frequency event recording
+
+## Related Topics
+
+- [Clock Normalizer](/api/clock-normalizer) - Synchronize timestamps across systems
+- [Playout Buffer](/api/playout-buffer) - Buffer management strategies
+- [Subscribe](/api/subscribe) - Receive streaming objects

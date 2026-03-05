@@ -1,0 +1,352 @@
+---
+title: 'Subscribing to Live Content'
+description: 'Learn how to subscribe to live streaming content using the MOQtail TypeScript client'
+---
+
+## Overview
+
+The `subscribe()` method enables you to consume real-time streaming content from publishers. Subscribe operations are optimized for live delivery with intelligent stream management and automatic cancellation of outdated content during network congestion.
+
+<Note>
+Subscribe operations are designed for live streaming scenarios where you want to receive content as it's being produced. For historical or static content, use the [fetch](/subscriber/fetching) method instead.
+</Note>
+
+## Transport Mechanisms
+
+Subscribe operations support multiple transport mechanisms for optimal performance:
+
+<CardGroup cols={2}>
+  <Card title="Datagrams" icon="signal-stream">
+    Low-latency delivery where occasional packet loss is acceptable
+  </Card>
+  <Card title="Multiple Streams" icon="stream">
+    Each group (GOP) delivered in a separate stream for better prioritization
+  </Card>
+</CardGroup>
+
+### Stream Cancellation
+
+The library implements intelligent stream cancellation on both sides:
+
+- **Publisher Side**: Automatically cancels streams for older groups when bandwidth is limited
+- **Subscriber Side**: Cancels streams for groups that are no longer needed due to latency constraints
+
+This ensures subscribers always receive the most recent content with minimal latency, automatically dropping outdated frames during network congestion.
+
+## Creating a Subscription
+
+<Steps>
+
+<Step title="Initialize the client">
+First, create a MOQtail client connection:
+
+```typescript
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com/transport',
+  supportedVersions: [0xff00000b]
+});
+```
+</Step>
+
+<Step title="Configure subscription parameters">
+Create a subscription request with your desired filter type:
+
+```typescript
+import { FilterType, GroupOrder } from 'moqtail';
+
+const result = await client.subscribe({
+  fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+  filterType: FilterType.LatestObject,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 0 // Highest priority (0-255)
+});
+```
+</Step>
+
+<Step title="Handle subscription response">
+Check if the subscription was successful:
+
+```typescript
+if (result instanceof SubscribeError) {
+  console.error(`Subscription failed: ${result.errorReason.phrase}`);
+  // Handle error based on error code
+  switch (result.errorCode) {
+    case SubscribeErrorCode.InvalidRange:
+      // Adjust range and retry
+      break;
+    case SubscribeErrorCode.TrackDoesNotExist:
+      console.error('Track not found');
+      break;
+    default:
+      console.error(`Unknown error: ${result.errorReason.phrase}`);
+  }
+} else {
+  // Success - result contains requestId and stream
+  const { requestId, stream } = result;
+  console.log(`Subscribed successfully with ID: ${requestId}`);
+}
+```
+</Step>
+
+<Step title="Process incoming objects">
+Consume objects from the stream:
+
+```typescript
+const reader = stream.getReader();
+
+try {
+  while (true) {
+    const { done, value: object } = await reader.read();
+    if (done) break;
+
+    // Process each object
+    console.log(`Received object ${object.objectId} from group ${object.groupId}`);
+    processObject(object);
+  }
+} finally {
+  reader.releaseLock();
+}
+```
+</Step>
+
+</Steps>
+
+## Filter Types
+
+The `filterType` parameter determines where the subscription starts:
+
+### LatestObject
+
+Subscribe to the most recent available object and continue receiving new objects:
+
+```typescript
+const result = await client.subscribe({
+  fullTrackName,
+  filterType: FilterType.LatestObject,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 32
+});
+```
+
+<Note>
+This is the most common filter type for live streaming applications where you want to join at the current position.
+</Note>
+
+### NextGroupStart
+
+Wait for the next group boundary before receiving objects:
+
+```typescript
+const result = await client.subscribe({
+  fullTrackName,
+  filterType: FilterType.NextGroupStart,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 32
+});
+```
+
+### AbsoluteStart
+
+Start from a specific location (group and object ID):
+
+```typescript
+import { Location } from 'moqtail';
+
+const result = await client.subscribe({
+  fullTrackName,
+  filterType: FilterType.AbsoluteStart,
+  startLocation: new Location(100n, 0n), // Group 100, Object 0
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 32
+});
+```
+
+<Warning>
+If the start location is less than the latest object at the publisher, the subscription behaves as `LatestObject`.
+</Warning>
+
+### AbsoluteRange
+
+Subscribe to a specific range of groups:
+
+```typescript
+const result = await client.subscribe({
+  fullTrackName,
+  filterType: FilterType.AbsoluteRange,
+  startLocation: new Location(100n, 0n),
+  endGroup: 200n, // Stop at group 200
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 32
+});
+```
+
+## Processing Objects
+
+Each `MoqtObject` has a status indicating its type:
+
+```typescript
+import { ObjectStatus } from 'moqtail';
+
+function processObject(object: MoqtObject) {
+  switch (object.objectStatus) {
+    case ObjectStatus.Normal:
+      // Regular data object with payload
+      if (object.payload) {
+        processMediaData(object.payload);
+      }
+      break;
+      
+    case ObjectStatus.ObjectDoesNotExist:
+      // Object was not available
+      console.warn(`Missing object ${object.objectId} in group ${object.groupId}`);
+      break;
+      
+    case ObjectStatus.GroupDoesNotExist:
+      // Entire group was not available
+      console.warn(`Missing group ${object.groupId}`);
+      break;
+      
+    case ObjectStatus.EndOfGroup:
+      // Marks the end of a group (GOP)
+      finalizeGroup(object.groupId);
+      break;
+      
+    case ObjectStatus.EndOfTrack:
+      // Marks the end of the track
+      console.log('Track ended');
+      finalizeTrack();
+      break;
+  }
+}
+```
+
+## Managing Subscriptions
+
+### Updating a Subscription
+
+You can update an active subscription to change its range or forwarding behavior:
+
+```typescript
+await client.subscribeUpdate({
+  subscriptionRequestId: requestId,
+  startLocation: new Location(150n, 0n), // Move start forward
+  endGroup: 250n, // Update end group
+  forward: true,
+  priority: 64 // Change priority
+});
+```
+
+<Note>
+You can only narrow the subscription window, not expand it. Moving the start earlier or end later will result in an error.
+</Note>
+
+### Unsubscribing
+
+Stop receiving objects by unsubscribing:
+
+```typescript
+await client.unsubscribe(requestId);
+```
+
+<Warning>
+Canceling the stream reader does NOT automatically unsubscribe. Always call `unsubscribe()` explicitly for proper cleanup.
+</Warning>
+
+## Complete Example
+
+Here's a complete example of subscribing to a live video track:
+
+```typescript
+import { MOQtailClient, FilterType, GroupOrder, SubscribeError } from 'moqtail';
+
+async function subscribeLiveVideo() {
+  // Initialize client
+  const client = await MOQtailClient.new({
+    url: 'https://relay.example.com/transport',
+    supportedVersions: [0xff00000b]
+  });
+
+  // Subscribe to live video
+  const result = await client.subscribe({
+    fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+    filterType: FilterType.LatestObject,
+    forward: true,
+    groupOrder: GroupOrder.Original,
+    priority: 0 // Highest priority
+  });
+
+  if (result instanceof SubscribeError) {
+    console.error(`Failed to subscribe: ${result.errorReason.phrase}`);
+    return;
+  }
+
+  const { requestId, stream } = result;
+  console.log(`Subscribed successfully with ID: ${requestId}`);
+
+  // Process the stream
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value: object } = await reader.read();
+      if (done) break;
+
+      if (object.objectStatus === ObjectStatus.Normal && object.payload) {
+        // Decode and render video frame
+        await decodeAndRenderFrame(object);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+    await client.unsubscribe(requestId);
+  }
+}
+```
+
+## Priority Management
+
+Priority values range from 0 (highest) to 255 (lowest):
+
+```typescript
+// Critical live video
+const videoResult = await client.subscribe({
+  fullTrackName: videoTrackName,
+  filterType: FilterType.LatestObject,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 0 // Highest priority
+});
+
+// Lower priority audio
+const audioResult = await client.subscribe({
+  fullTrackName: audioTrackName,
+  filterType: FilterType.LatestObject,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 32
+});
+
+// Background data
+const dataResult = await client.subscribe({
+  fullTrackName: dataTrackName,
+  filterType: FilterType.LatestObject,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 128 // Lower priority
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Fetching Historical Content" icon="clock-rotate-left" href="/subscriber/fetching">
+    Learn how to retrieve historical data
+  </Card>
+  <Card title="Playout Buffer" icon="buffer" href="/subscriber/playout-buffer">
+    Implement smooth media playback
+  </Card>
+</CardGroup>

@@ -1,0 +1,493 @@
+---
+title: Model
+description: MOQT protocol data structures and message types in Moqtail
+---
+
+# Model
+
+The model module contains all MOQT protocol data structures, message types, and serialization/deserialization logic. It provides type-safe representations of the MOQT Draft 14 specification.
+
+## Module Organization
+
+The model is organized into several submodules:
+
+```rust
+pub mod catalog;    // Catalog data structures
+pub mod common;     // Shared types (tuples, varints, locations)
+pub mod control;    // Control message types
+pub mod data;       // Data stream structures
+pub mod error;      // Error types and codes
+pub mod extension_header;  // Extension headers
+pub mod parameter;  // Setup and message parameters
+```
+
+## Control Messages
+
+### ControlMessage Enum
+
+The `ControlMessage` enum represents all MOQT control message types:
+
+```rust
+use moqtail::model::control::control_message::ControlMessage;
+
+pub enum ControlMessage {
+    // Namespace publishing
+    PublishNamespace(Box<PublishNamespace>),
+    PublishNamespaceOk(Box<PublishNamespaceOk>),
+    PublishNamespaceError(Box<PublishNamespaceError>),
+    PublishNamespaceCancel(Box<PublishNamespaceCancel>),
+    PublishNamespaceDone(Box<PublishNamespaceDone>),
+    
+    // Track publishing
+    Publish(Box<Publish>),
+    PublishOk(Box<PublishOk>),
+    PublishError(Box<PublishError>),
+    PublishDone(Box<PublishDone>),
+    
+    // Setup
+    ClientSetup(Box<ClientSetup>),
+    ServerSetup(Box<ServerSetup>),
+    
+    // Subscription
+    Subscribe(Box<Subscribe>),
+    SubscribeOk(Box<SubscribeOk>),
+    SubscribeError(Box<SubscribeError>),
+    SubscribeUpdate(Box<SubscribeUpdate>),
+    Unsubscribe(Box<Unsubscribe>),
+    
+    // Namespace subscription
+    SubscribeNamespace(Box<SubscribeNamespace>),
+    SubscribeNamespaceOk(Box<SubscribeNamespaceOk>),
+    SubscribeNamespaceError(Box<SubscribeNamespaceError>),
+    UnsubscribeNamespace(Box<UnsubscribeNamespace>),
+    
+    // Fetch
+    Fetch(Box<Fetch>),
+    FetchOk(Box<FetchOk>),
+    FetchError(Box<FetchError>),
+    FetchCancel(Box<FetchCancel>),
+    
+    // Status
+    TrackStatus(Box<TrackStatus>),
+    TrackStatusOk(Box<TrackStatusOk>),
+    TrackStatusError(Box<TrackStatusError>),
+    
+    // Connection management
+    Goaway(Box<GoAway>),
+    RequestsBlocked(Box<RequestsBlocked>),
+    MaxRequestId(Box<MaxRequestId>),
+    Switch(Box<Switch>),
+}
+```
+
+### Serialization and Deserialization
+
+All control messages implement serialization:
+
+```rust
+use bytes::Bytes;
+use moqtail::model::error::ParseError;
+
+// Serialize a control message
+let message = ControlMessage::Subscribe(Box::new(subscribe));
+let bytes: Bytes = message.serialize()?;
+
+// Deserialize from bytes
+let mut buffer = bytes;
+let parsed: ControlMessage = ControlMessage::deserialize(&mut buffer)?;
+
+match parsed {
+    ControlMessage::Subscribe(sub) => println!("Received subscribe for {}", sub.track_name),
+    _ => println!("Other message type"),
+}
+```
+
+## Setup Messages
+
+### ClientSetup
+
+Initiates the MOQT handshake:
+
+```rust
+use moqtail::model::control::client_setup::ClientSetup;
+use moqtail::model::control::constant::DRAFT_14;
+use moqtail::model::common::pair::KeyValuePair;
+use bytes::Bytes;
+
+// Create client setup with supported versions
+let supported_versions = vec![DRAFT_14];
+let setup_parameters = vec![
+    KeyValuePair::try_new_varint(0, 10).unwrap(),
+    KeyValuePair::try_new_bytes(1, Bytes::from_static(b"client-role")).unwrap(),
+];
+
+let client_setup = ClientSetup::new(supported_versions, setup_parameters);
+
+// Serialize
+let bytes = client_setup.serialize()?;
+
+// Deserialize
+let mut buf = bytes;
+let parsed = ClientSetup::parse_payload(&mut buf)?;
+```
+
+### ServerSetup
+
+Server's response to client setup:
+
+```rust
+use moqtail::model::control::server_setup::ServerSetup;
+
+let server_setup = ServerSetup {
+    selected_version: DRAFT_14,
+    setup_parameters: vec![
+        KeyValuePair::try_new_bytes(1, Bytes::from_static(b"relay-server")).unwrap(),
+    ],
+};
+```
+
+## Subscription Messages
+
+### Subscribe
+
+Request to subscribe to a track:
+
+```rust
+use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::control::constant::{FilterType, GroupOrder};
+use moqtail::model::common::tuple::{Tuple, TupleField};
+use moqtail::model::common::location::Location;
+
+// Subscribe from latest object
+let subscribe = Subscribe::new_latest_object(
+    request_id: 1,
+    track_namespace: Tuple::from_utf8_path("conference/room1"),
+    track_name: TupleField::from_utf8("video"),
+    subscriber_priority: 128,
+    group_order: GroupOrder::Ascending,
+    forward: true,
+    subscribe_parameters: vec![],
+);
+
+// Subscribe from specific location
+let subscribe = Subscribe::new_absolute_start(
+    request_id: 2,
+    track_namespace: Tuple::from_utf8_path("conference/room1"),
+    track_name: TupleField::from_utf8("audio"),
+    subscriber_priority: 128,
+    group_order: GroupOrder::Original,
+    forward: false,
+    start_location: Location { group: 100, object: 0 },
+    subscribe_parameters: vec![],
+);
+
+// Subscribe to a range
+let subscribe = Subscribe::new_absolute_range(
+    request_id: 3,
+    track_namespace: Tuple::from_utf8_path("conference/room1"),
+    track_name: TupleField::from_utf8("chat"),
+    subscriber_priority: 64,
+    group_order: GroupOrder::Ascending,
+    forward: true,
+    start_location: Location { group: 50, object: 0 },
+    end_group: 100,
+    subscribe_parameters: vec![],
+);
+```
+
+### FilterType and GroupOrder
+
+Subscription filtering options:
+
+```rust
+use moqtail::model::control::constant::{FilterType, GroupOrder};
+
+// Filter types
+let filter = FilterType::LatestObject;    // Start from latest
+let filter = FilterType::NextGroupStart;  // Start from next group
+let filter = FilterType::AbsoluteStart;   // Start from specific location
+let filter = FilterType::AbsoluteRange;   // Specific range
+
+// Group ordering
+let order = GroupOrder::Original;    // Publisher's order
+let order = GroupOrder::Ascending;   // Ascending group IDs
+let order = GroupOrder::Descending;  // Descending group IDs
+```
+
+## Common Types
+
+### Tuple and TupleField
+
+Namespace and track name representations:
+
+```rust
+use moqtail::model::common::tuple::{Tuple, TupleField};
+
+// Create tuple from path
+let namespace = Tuple::from_utf8_path("conference/room1/track1");
+println!("Fields: {}", namespace.fields.len()); // 3
+
+// Create individual field
+let field = TupleField::from_utf8("video");
+println!("Length: {}", field.len());
+
+// Build tuple manually
+let mut tuple = Tuple::new();
+tuple.add(TupleField::from_utf8("conference"));
+tuple.add(TupleField::from_utf8("room42"));
+
+// Convert to path
+let path = tuple.to_utf8_path();
+println!("Path: {}", path); // "/conference/room42"
+
+// Check prefix
+let prefix = Tuple::from_utf8_path("conference");
+assert!(tuple.starts_with(&prefix));
+
+// Serialize/deserialize
+let bytes = tuple.serialize()?;
+let mut buf = bytes;
+let parsed = Tuple::deserialize(&mut buf)?;
+```
+
+### FullTrackName
+
+Combines namespace and track name:
+
+```rust
+use moqtail::model::data::full_track_name::FullTrackName;
+
+// Create full track name
+let namespace = Tuple::from_utf8_path("conference/room1");
+let track_name = TupleField::from_utf8("video");
+let full_track = FullTrackName::new(namespace, track_name)?;
+
+// Or use convenience method
+let full_track = FullTrackName::try_new("conference/room1", "video")?;
+
+// Display
+println!("{}", full_track); // "conference-room1--video"
+
+// Serialize/deserialize
+let bytes = full_track.serialize()?;
+let mut buf = bytes;
+let parsed = FullTrackName::deserialize(&mut buf)?;
+```
+
+### Location
+
+Identifies a specific object in a track:
+
+```rust
+use moqtail::model::common::location::Location;
+
+let loc = Location {
+    group: 42,
+    object: 10,
+};
+
+// Serialize/deserialize
+let bytes = loc.serialize()?;
+let mut buf = bytes;
+let parsed = Location::deserialize(&mut buf)?;
+```
+
+### KeyValuePair
+
+Parameters for setup and other messages:
+
+```rust
+use moqtail::model::common::pair::KeyValuePair;
+use bytes::Bytes;
+
+// Varint value
+let param = KeyValuePair::try_new_varint(0, 1000)?;
+
+// Bytes value
+let param = KeyValuePair::try_new_bytes(
+    1,
+    Bytes::from_static(b"custom-value")
+)?;
+
+// Serialize/deserialize
+let bytes = param.serialize()?;
+let mut buf = bytes;
+let parsed = KeyValuePair::deserialize(&mut buf)?;
+```
+
+## Data Structures
+
+### Track
+
+Represents a media track:
+
+```rust
+use moqtail::model::data::track::Track;
+use moqtail::model::data::full_track_name::FullTrackName;
+use moqtail::model::data::constant::ObjectForwardingPreference;
+use std::collections::BTreeMap;
+
+let track = Track {
+    full_track_name: FullTrackName::try_new("conference/room1", "video")?,
+    groups: BTreeMap::new(),
+    forwarding_preference: ObjectForwardingPreference::StreamPerObject,
+};
+```
+
+### Group and Object
+
+Organize media data:
+
+```rust
+use moqtail::model::data::group::Group;
+use moqtail::model::data::object::Object;
+
+// Groups contain objects
+let group = Group {
+    id: 42,
+    objects: BTreeMap::new(),
+};
+
+// Objects contain media data
+let object = Object {
+    id: 10,
+    payload: bytes,
+};
+```
+
+## Error Types
+
+### ParseError
+
+Errors during message parsing:
+
+```rust
+use moqtail::model::error::ParseError;
+
+match result {
+    Err(ParseError::NotEnoughBytes { context, needed, available }) => {
+        eprintln!("Need {} bytes, have {}, context: {}", needed, available, context);
+    }
+    Err(ParseError::ProtocolViolation { context, details }) => {
+        eprintln!("Protocol violation in {}: {}", context, details);
+    }
+    Err(ParseError::CastingError { context, from_type, to_type, details }) => {
+        eprintln!("Cast error {} -> {} in {}: {}", from_type, to_type, context, details);
+    }
+    Err(ParseError::TrackNameError { context, details }) => {
+        eprintln!("Track name error in {}: {}", context, details);
+    }
+    Ok(value) => { /* use value */ }
+}
+```
+
+### TerminationCode
+
+Connection termination reasons:
+
+```rust
+use moqtail::model::error::TerminationCode;
+
+let error = TerminationCode::ProtocolViolation;
+println!("Error code: {}", error.to_u32());
+println!("Error JSON: {}", error.to_json());
+
+match error {
+    TerminationCode::NoError => { /* clean close */ }
+    TerminationCode::InternalError => { /* internal error */ }
+    TerminationCode::Unauthorized => { /* auth failed */ }
+    TerminationCode::ProtocolViolation => { /* protocol error */ }
+    TerminationCode::ControlMessageTimeout => { /* timeout */ }
+    TerminationCode::VersionNegotiationFailed => { /* version mismatch */ }
+    _ => { /* other errors */ }
+}
+```
+
+## Message Examples
+
+### Complete Message Roundtrip
+
+Example showing serialization and deserialization:
+
+```rust
+use moqtail::model::control::publish_namespace::PublishNamespace;
+use moqtail::model::control::control_message::ControlMessage;
+use moqtail::model::common::tuple::Tuple;
+use moqtail::model::common::pair::KeyValuePair;
+use bytes::Bytes;
+
+// Create message
+let request_id = 12345;
+let track_namespace = Tuple::from_utf8_path("conference/room1");
+let parameters = vec![
+    KeyValuePair::try_new_varint(0, 10).unwrap(),
+    KeyValuePair::try_new_bytes(1, Bytes::from_static(b"metadata")).unwrap(),
+];
+
+let announce = PublishNamespace {
+    request_id,
+    track_namespace,
+    parameters,
+};
+
+// Serialize
+let mut buf = announce.serialize().unwrap();
+
+// Deserialize
+let deserialized = ControlMessage::deserialize(&mut buf).unwrap();
+
+// Match and verify
+if let ControlMessage::PublishNamespace(deserialized_announce) = deserialized {
+    assert_eq!(*deserialized_announce, announce);
+    println!("Roundtrip successful!");
+}
+```
+
+## Constants
+
+### Protocol Constants
+
+Important MOQT constants:
+
+```rust
+use moqtail::model::control::constant::DRAFT_14;
+
+// Version
+const MOQT_VERSION: u32 = DRAFT_14;
+
+// Error codes available in various enums:
+// - PublishNamespaceErrorCode
+// - PublishErrorCode  
+// - SubscribeErrorCode
+// - FetchErrorCode
+```
+
+## Best Practices
+
+<Note>
+  **Type Safety**: Always use the type-safe structures instead of raw bytes. The model layer ensures protocol correctness at compile time.
+</Note>
+
+<Note>
+  **Error Handling**: Match on specific error variants to handle different failure scenarios appropriately.
+</Note>
+
+<Note>
+  **Validation**: The model layer validates constraints (e.g., max namespace length, required fields) during construction and deserialization.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Transport Layer" icon="network-wired" href="/rust/transport">
+    Learn how messages are sent and received
+  </Card>
+  
+  <Card title="Client Guide" icon="laptop" href="/rust/client">
+    Build clients using these message types
+  </Card>
+  
+  <Card title="Relay Guide" icon="server" href="/rust/relay">
+    Implement relay logic with the model layer
+  </Card>
+</CardGroup>

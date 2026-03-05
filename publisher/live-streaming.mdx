@@ -1,0 +1,436 @@
+---
+title: 'Live Streaming'
+description: 'Stream real-time content using LiveTrackSource for continuous media delivery'
+---
+
+## Overview
+
+Live streaming in Moqtail enables real-time delivery of continuously generated content like video streams, audio feeds, or sensor data. The `LiveTrackSource` class wraps a `ReadableStream<MoqtObject>` and handles the complexities of live object distribution.
+
+<Note>
+Live tracks are optimized for forward-only delivery. Subscribers can join at any time and receive objects from the current position forward.
+</Note>
+
+## Creating a Live Track Source
+
+The `LiveTrackSource` is designed for streaming content that is continuously produced:
+
+```typescript
+import { LiveTrackSource, MoqtObject } from 'moqtail-ts'
+
+// Create a readable stream of objects
+const liveStream = new ReadableStream<MoqtObject>({
+  async start(controller) {
+    // Your content generation logic
+    while (capturing) {
+      const object = await generateNextObject()
+      controller.enqueue(object)
+    }
+    controller.close()
+  }
+})
+
+// Wrap in LiveTrackSource
+const liveSource = new LiveTrackSource(liveStream)
+```
+
+### Live Source Interface
+
+The `LiveTrackSource` implements the `LiveObjectSource` interface:
+
+```typescript
+interface LiveObjectSource {
+  readonly stream: ReadableStream<MoqtObject>
+  readonly largestLocation: Location | undefined
+  onNewObject(listener: (obj: MoqtObject) => void): () => void
+  onDone(listener: () => void): () => void
+  stop(): void
+}
+```
+
+<Steps>
+
+<Step title="Stream Access">
+The underlying `ReadableStream<MoqtObject>` that produces objects:
+
+```typescript
+const stream = liveSource.stream
+```
+</Step>
+
+<Step title="Latest Position">
+Tracks the highest location seen so far:
+
+```typescript
+// Returns undefined until first object arrives
+const latest = liveSource.largestLocation
+if (latest) {
+  console.log(`Latest: Group ${latest.group}, Object ${latest.object}`)
+}
+```
+</Step>
+
+<Step title="Event Listeners">
+Register callbacks for new objects or stream completion:
+
+```typescript
+// Listen for each new object
+const unsubscribe = liveSource.onNewObject((obj) => {
+  console.log(`New object: ${obj.groupId}:${obj.objectId}`)
+})
+
+// Listen for stream end
+liveSource.onDone(() => {
+  console.log('Live stream ended')
+})
+
+// Clean up when done
+unsubscribe()
+```
+</Step>
+
+<Step title="Manual Stop">
+Stop ingestion and release resources:
+
+```typescript
+liveSource.stop()
+```
+</Step>
+
+</Steps>
+
+## Real-Time Video Example
+
+Here's a complete example streaming video from a canvas:
+
+```typescript
+import {
+  MOQtailClient,
+  FullTrackName,
+  Track,
+  LiveTrackSource,
+  MoqtObject,
+  Location,
+  ObjectForwardingPreference
+} from 'moqtail-ts'
+
+// Configuration
+const KEYFRAME_INTERVAL = 30 // frames
+const fullTrackName = FullTrackName.tryNew('live/conference', 'video')
+
+// Create video encoder stream
+const videoStream = new ReadableStream<MoqtObject>({
+  async start(controller) {
+    let groupId = 0n
+    let objectId = 0n
+    let frameCount = 0
+    
+    // Get canvas stream
+    const canvas = document.getElementById('video-canvas') as HTMLCanvasElement
+    const stream = canvas.captureStream(30) // 30 fps
+    const track = stream.getVideoTracks()[0]
+    
+    // Set up video encoder
+    const encoder = new VideoEncoder({
+      output: (chunk, metadata) => {
+        const isKeyframe = chunk.type === 'key'
+        
+        // Create MoqtObject from encoded chunk
+        const object = MoqtObject.newWithPayload(
+          fullTrackName,
+          new Location(groupId, objectId),
+          isKeyframe ? 0 : 8, // Higher priority for keyframes
+          ObjectForwardingPreference.Subgroup,
+          null,
+          null,
+          new Uint8Array(chunk.byteLength).fill(0) // Copy chunk data
+        )
+        
+        controller.enqueue(object)
+        
+        // Advance position
+        if (isKeyframe && objectId > 0n) {
+          groupId++
+          objectId = 0n
+        } else {
+          objectId++
+        }
+      },
+      error: (error) => {
+        console.error('Encoding error:', error)
+        controller.error(error)
+      }
+    })
+    
+    encoder.configure({
+      codec: 'vp09.00.10.08',
+      width: 1280,
+      height: 720,
+      bitrate: 2_000_000,
+      framerate: 30
+    })
+    
+    // Encode frames
+    const reader = new MediaStreamTrackProcessor({ track }).readable.getReader()
+    
+    try {
+      while (true) {
+        const { done, value: frame } = await reader.read()
+        if (done) break
+        
+        encoder.encode(frame, { keyFrame: frameCount % KEYFRAME_INTERVAL === 0 })
+        frame.close()
+        frameCount++
+      }
+    } finally {
+      await encoder.flush()
+      controller.close()
+    }
+  }
+})
+
+// Create track with live source
+const videoTrack: Track = {
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: {
+    live: new LiveTrackSource(videoStream)
+  },
+  publisherPriority: 0
+}
+
+// Publish
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com',
+  supportedVersions: [0xff00000b]
+})
+
+client.addOrUpdateTrack(videoTrack)
+await client.publishNamespace(['live', 'conference'])
+```
+
+## Audio Streaming Example
+
+Stream audio from a microphone:
+
+```typescript
+import {
+  LiveTrackSource,
+  MoqtObject,
+  Location,
+  FullTrackName,
+  ObjectForwardingPreference
+} from 'moqtail-ts'
+
+const fullTrackName = FullTrackName.tryNew('live/conference', 'audio')
+
+const audioStream = new ReadableStream<MoqtObject>({
+  async start(controller) {
+    let groupId = 0n // Audio segment (e.g., 1 second)
+    let objectId = 0n // Packet within segment
+    let packetCount = 0
+    
+    const PACKETS_PER_SEGMENT = 50 // 20ms packets for 1s segment
+    
+    // Get microphone stream
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const audioTrack = stream.getAudioTracks()[0]
+    
+    // Set up audio encoder (Opus)
+    const encoder = new AudioEncoder({
+      output: (chunk) => {
+        const object = MoqtObject.newWithPayload(
+          fullTrackName,
+          new Location(groupId, objectId),
+          16, // Medium priority
+          ObjectForwardingPreference.Datagram, // Low latency for audio
+          null,
+          null,
+          new Uint8Array(chunk.byteLength).fill(0) // Copy chunk data
+        )
+        
+        controller.enqueue(object)
+        
+        // Move to next segment after 50 packets
+        objectId++
+        packetCount++
+        if (packetCount >= PACKETS_PER_SEGMENT) {
+          groupId++
+          objectId = 0n
+          packetCount = 0
+        }
+      },
+      error: (error) => controller.error(error)
+    })
+    
+    encoder.configure({
+      codec: 'opus',
+      sampleRate: 48000,
+      numberOfChannels: 2,
+      bitrate: 128_000
+    })
+    
+    // Encode audio
+    const reader = new MediaStreamTrackProcessor({ track: audioTrack }).readable.getReader()
+    
+    while (true) {
+      const { done, value: frame } = await reader.read()
+      if (done) break
+      
+      encoder.encode(frame)
+      frame.close()
+    }
+    
+    await encoder.flush()
+    controller.close()
+  }
+})
+
+const audioTrack: Track = {
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Datagram,
+  trackSource: {
+    live: new LiveTrackSource(audioStream)
+  },
+  publisherPriority: 8 // High priority but below keyframes
+}
+```
+
+## Datagram Delivery
+
+For ultra-low latency scenarios, use datagram delivery:
+
+```typescript
+import { ObjectForwardingPreference } from 'moqtail-ts'
+
+const liveTrack: Track = {
+  fullTrackName: FullTrackName.tryNew('sensors/temperature', 'data'),
+  forwardingPreference: ObjectForwardingPreference.Datagram,
+  trackSource: {
+    live: new LiveTrackSource(sensorStream)
+  },
+  publisherPriority: 0
+}
+
+// Enable datagrams on the client
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com',
+  supportedVersions: [0xff00000b],
+  enableDatagrams: true // Required for datagram delivery
+})
+```
+
+<Warning>
+Datagrams may be lost or delivered out of order. Only use for content where latency is more critical than reliability (e.g., sensor data, audio, low-latency video).
+</Warning>
+
+## Stream Cancellation
+
+The library implements intelligent stream cancellation:
+
+<CodeGroup>
+
+```typescript Publisher Side
+// Automatically cancels streams for older groups
+// when bandwidth is limited
+
+// The publication system handles this internally
+// when delivering subgroup objects to subscribers
+```
+
+```typescript Subscriber Side
+// Cancels streams for groups that are no longer needed
+// due to latency constraints
+
+// Handled automatically by the playout buffer
+import { PullPlayoutBuffer } from 'moqtail-ts'
+
+const playoutBuffer = new PullPlayoutBuffer(objectStream, {
+  bucketCapacity: 50,
+  targetLatencyMs: 500,
+  maxLatencyMs: 2000 // Drop GOPs older than 2s
+})
+```
+
+</CodeGroup>
+
+<Note>
+Stream cancellation ensures subscribers always receive the most recent content with minimal latency, automatically dropping outdated frames during network congestion.
+</Note>
+
+## Handling End of Stream
+
+Signal the end of a live track properly:
+
+```typescript
+const liveStream = new ReadableStream<MoqtObject>({
+  async start(controller) {
+    // ... generate objects ...
+    
+    // When done, send end-of-track marker
+    const endObject = MoqtObject.newWithStatus(
+      fullTrackName,
+      new Location(lastGroupId, lastObjectId + 1n),
+      0,
+      ObjectForwardingPreference.Subgroup,
+      null,
+      null,
+      ObjectStatus.EndOfTrack
+    )
+    
+    controller.enqueue(endObject)
+    controller.close()
+  }
+})
+```
+
+## Best Practices
+
+<Card title="GOP Structure" icon="film">
+- Start each GOP with a keyframe (objectId = 0)
+- Keep GOP duration consistent (e.g., 2 seconds)
+- Use group boundaries to enable efficient seeking
+</Card>
+
+<Card title="Priority Assignment" icon="signal">
+- Keyframes: 0 (highest priority)
+- P-frames: 8-16
+- B-frames: 16-32
+- Audio: 8-16
+- Metadata: 32-64
+</Card>
+
+<Card title="Error Handling" icon="triangle-exclamation">
+```typescript
+const liveSource = new LiveTrackSource(liveStream)
+
+liveSource.onDone(() => {
+  console.log('Stream ended - cleaning up')
+  client.removeTrack(track)
+})
+```
+</Card>
+
+<Card title="Resource Cleanup" icon="broom">
+```typescript
+// Stop live source when no longer needed
+liveSource.stop()
+
+// Remove track from client
+client.removeTrack(track)
+
+// Announce namespace done
+await client.publishNamespaceDone(namespace)
+```
+</Card>
+
+## Next Steps
+
+<CardGroup cols={2}>
+<Card title="Static Content" icon="database" href="/publisher/static-content">
+Learn about serving pre-recorded content
+</Card>
+<Card title="Hybrid Content" icon="arrows-split-up-and-left" href="/publisher/hybrid-content">
+Combine live streaming with historical access
+</Card>
+</CardGroup>

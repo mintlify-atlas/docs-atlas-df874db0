@@ -1,0 +1,561 @@
+---
+title: 'Object Cache'
+description: 'In-memory storage for historical MOQT objects with range query support'
+---
+
+# Object Cache
+
+Object caches provide efficient in-memory storage and retrieval of `MoqtObject` instances, enabling historical playback, catch-up, and VOD scenarios.
+
+## Overview
+
+The `ObjectCache` interface defines a sorted collection of objects indexed by their `Location` (group, object). Caches support:
+
+- **Insertion** - Adding objects while maintaining sorted order
+- **Range queries** - Retrieving objects within a location range
+- **Exact lookup** - Finding objects by location
+- **Size management** - Tracking and limiting cache size
+
+---
+
+## ObjectCache Interface
+
+```typescript
+interface ObjectCache {
+  add(obj: MoqtObject): void;
+  getRange(start?: Location, end?: Location): MoqtObject[];
+  getByLocation(location: Location): MoqtObject | undefined;
+  size(): number;
+  clear(): void;
+}
+```
+
+### Methods
+
+#### `add()`
+
+Inserts a new object, preserving sorted order.
+
+```typescript
+add(obj: MoqtObject): void
+```
+
+<ParamField path="obj" type="MoqtObject" required>
+  Object to add to the cache
+</ParamField>
+
+<Info>
+Objects are automatically sorted by `(groupId, objectId)`. Duplicates handling is implementation-defined.
+</Info>
+
+```typescript
+cache.add(moqtObject);
+```
+
+#### `getRange()`
+
+Returns objects whose Location is >= start and < end (end exclusive).
+
+```typescript
+getRange(start?: Location, end?: Location): MoqtObject[]
+```
+
+<ParamField path="start" type="Location">
+  Inclusive start location. Omit to start from earliest cached object.
+</ParamField>
+
+<ParamField path="end" type="Location">
+  Exclusive end location. Omit to include up to latest cached object.
+</ParamField>
+
+<ResponseField name="return" type="MoqtObject[]">
+  Array of objects in ascending location order. Empty if range is outside cached bounds.
+</ResponseField>
+
+<CodeGroup>
+```typescript All Objects
+const allObjects = cache.getRange();
+```
+
+```typescript Specific Range
+const objects = cache.getRange(
+  new Location(10n, 0n),  // Start: group 10, object 0
+  new Location(20n, 0n)   // End: group 20 (exclusive)
+);
+```
+
+```typescript From Start
+const firstTen = cache.getRange(
+  new Location(0n, 0n),
+  new Location(10n, 0n)
+);
+```
+
+```typescript To End
+const fromGroup50 = cache.getRange(
+  new Location(50n, 0n)
+);
+```
+</CodeGroup>
+
+#### `getByLocation()`
+
+Returns the object at an exact location, or `undefined` if not found.
+
+```typescript
+getByLocation(location: Location): MoqtObject | undefined
+```
+
+<ParamField path="location" type="Location" required>
+  Exact location to look up
+</ParamField>
+
+<ResponseField name="return" type="MoqtObject | undefined">
+  Object at the location, or `undefined` if absent
+</ResponseField>
+
+```typescript
+const obj = cache.getByLocation(new Location(42n, 5n));
+if (obj) {
+  console.log('Found:', obj.payload.length, 'bytes');
+} else {
+  console.log('Not in cache');
+}
+```
+
+#### `size()`
+
+Returns the current number of cached objects.
+
+```typescript
+size(): number
+```
+
+```typescript
+console.log(`Cache contains ${cache.size()} objects`);
+```
+
+#### `clear()`
+
+Removes all cached objects.
+
+```typescript
+clear(): void
+```
+
+```typescript
+cache.clear();
+console.log(`Cache cleared, size: ${cache.size()}`);
+```
+
+---
+
+## Implementations
+
+### MemoryObjectCache
+
+Unbounded in-memory cache using an array for storage.
+
+#### Constructor
+
+```typescript
+const cache = new MemoryObjectCache()
+```
+
+Creates an empty cache with no size limit.
+
+#### Characteristics
+
+- **Storage**: Unbounded array
+- **Insertion**: O(log n) using binary search
+- **Range query**: O(log n + k) where k = result size
+- **Lookup**: O(log n)
+- **Memory**: Grows indefinitely
+
+#### Example
+
+```typescript
+import { MemoryObjectCache, MoqtObject, Location } from 'moqtail';
+
+const cache = new MemoryObjectCache();
+
+// Add objects
+for (let i = 0; i < 100; i++) {
+  const obj = MoqtObject.newWithPayload(
+    fullTrackName,
+    new Location(i, 0),
+    0,
+    ObjectForwardingPreference.Subgroup,
+    0n,
+    null,
+    new TextEncoder().encode(`Object ${i}`)
+  );
+  cache.add(obj);
+}
+
+console.log(`Cached ${cache.size()} objects`);
+
+// Query range
+const slice = cache.getRange(
+  new Location(10n, 0n),
+  new Location(20n, 0n)
+);
+console.log(`Retrieved ${slice.length} objects`);
+```
+
+<Warning>
+**Memory Growth**: `MemoryObjectCache` has no size limit and will grow indefinitely. Use `RingBufferObjectCache` for live streams.
+</Warning>
+
+---
+
+### RingBufferObjectCache
+
+Bounded ring buffer cache that evicts oldest objects when capacity is reached.
+
+#### Constructor
+
+```typescript
+const cache = new RingBufferObjectCache(maxSize: number = 100)
+```
+
+<ParamField path="maxSize" type="number">
+  Maximum number of objects to cache. Defaults to 100.
+</ParamField>
+
+#### Characteristics
+
+- **Storage**: Bounded array (ring buffer behavior)
+- **Insertion**: O(log n) + O(1) eviction
+- **Range query**: O(log n + k)
+- **Lookup**: O(log n)
+- **Memory**: Fixed to `maxSize`
+- **Eviction**: FIFO (oldest objects removed first)
+
+#### Example
+
+```typescript
+import { RingBufferObjectCache, MoqtObject, Location } from 'moqtail';
+
+// Keep last 1000 objects
+const cache = new RingBufferObjectCache(1000);
+
+// Stream live objects
+for await (const obj of liveStream) {
+  cache.add(obj); // Automatically evicts oldest if > 1000
+}
+
+console.log(`Cache size: ${cache.size()} (max: 1000)`);
+
+// Get recent objects
+const recent = cache.getRange();
+console.log(`Recent: ${recent.length} objects`);
+```
+
+<Tip>
+**Live Streaming**: Use `RingBufferObjectCache` for live tracks to provide a sliding window of recent objects without unbounded memory growth.
+</Tip>
+
+---
+
+## Usage Patterns
+
+### VOD/Static Content
+
+Cache entire pre-recorded content:
+
+```typescript
+import { MemoryObjectCache } from 'moqtail';
+
+const cache = new MemoryObjectCache();
+
+// Load recording
+const recording = await loadRecording('video.moqt');
+recording.forEach(obj => cache.add(obj));
+
+console.log(`Loaded ${cache.size()} objects`);
+
+// Serve via past source
+const trackSource: TrackSource = {
+  past: new StaticTrackSource(cache)
+};
+
+client.addOrUpdateTrack({
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource,
+  publisherPriority: 64
+});
+```
+
+### Live Stream with Catch-Up
+
+Cache recent live objects for late joiners:
+
+```typescript
+import { RingBufferObjectCache, HybridTrackSource } from 'moqtail';
+
+// Keep last 5 seconds at 30fps = 150 objects
+const cache = new RingBufferObjectCache(150);
+const liveStream = createLiveStream();
+
+// Cache live objects as they arrive
+const hybrid = new HybridTrackSource(cache, liveStream);
+hybrid.live.onNewObject(obj => {
+  cache.add(obj);
+});
+
+client.addOrUpdateTrack({
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: hybrid,
+  publisherPriority: 0
+});
+```
+
+### Selective Caching
+
+Cache only keyframes for fast seeking:
+
+```typescript
+import { MemoryObjectCache } from 'moqtail';
+
+const keyframeCache = new MemoryObjectCache();
+
+liveStream.pipeTo(new WritableStream({
+  write(obj: MoqtObject) {
+    if (isKeyframe(obj)) {
+      keyframeCache.add(obj);
+    }
+  }
+}));
+
+function isKeyframe(obj: MoqtObject): boolean {
+  // Check extension headers or payload for keyframe marker
+  return obj.objectId === 0n; // First object in group
+}
+```
+
+### Dual Cache Strategy
+
+Combine ring buffer for recent objects and selective cache for keyframes:
+
+```typescript
+import { RingBufferObjectCache, MemoryObjectCache } from 'moqtail';
+
+const recentCache = new RingBufferObjectCache(500);
+const keyframeCache = new MemoryObjectCache();
+
+liveStream.pipeTo(new WritableStream({
+  write(obj: MoqtObject) {
+    // Cache all recent
+    recentCache.add(obj);
+    
+    // Also cache keyframes permanently
+    if (isKeyframe(obj)) {
+      keyframeCache.add(obj);
+    }
+  }
+}));
+
+// Serve recent objects
+const trackSource: TrackSource = {
+  past: new StaticTrackSource(recentCache),
+  live: new LiveTrackSource(liveStream)
+};
+```
+
+### Batch Loading
+
+Load cache from persisted storage:
+
+```typescript
+import { MemoryObjectCache } from 'moqtail';
+
+async function loadCacheFromStorage(path: string): Promise<MemoryObjectCache> {
+  const cache = new MemoryObjectCache();
+  const data = await fs.readFile(path);
+  
+  // Parse serialized objects
+  const objects = deserializeObjectArray(data);
+  objects.forEach(obj => cache.add(obj));
+  
+  return cache;
+}
+
+const cache = await loadCacheFromStorage('recording.bin');
+console.log(`Loaded ${cache.size()} objects`);
+```
+
+---
+
+## Performance Considerations
+
+### Binary Search Complexity
+
+Both implementations use binary search for insertion and lookup:
+
+| Operation | Complexity |
+|-----------|------------|
+| `add()` | O(log n) + O(n) for insertion |
+| `getRange()` | O(log n) to find bounds + O(k) to slice |
+| `getByLocation()` | O(log n) |
+| `size()` | O(1) |
+| `clear()` | O(1) |
+
+### Memory Usage
+
+```typescript
+// Approximate memory per object
+const bytesPerObject = 
+  payload.length +     // Payload size
+  64 +                 // Object metadata
+  16;                  // Array overhead
+
+// Ring buffer with 1000 objects of ~10KB each
+const cache = new RingBufferObjectCache(1000);
+// Approx: 1000 * (10KB + 80 bytes) ≈ 10MB
+```
+
+<Tip>
+**Cache Sizing**: For live streaming at 30fps:
+- 1 second buffer: 30 objects
+- 5 second buffer: 150 objects
+- 30 second buffer: 900 objects
+
+Choose based on your late-joiner requirements.
+</Tip>
+
+---
+
+## Integration with PastObjectSource
+
+Caches are typically used with `PastObjectSource` for serving historical content:
+
+```typescript
+import { StaticTrackSource, MemoryObjectCache } from 'moqtail';
+
+const cache = new MemoryObjectCache();
+// Populate cache...
+
+const pastSource: PastObjectSource = new StaticTrackSource(cache);
+
+// Or implement custom:
+const customPastSource: PastObjectSource = {
+  cache,
+  async getRange(start, end) {
+    const objects = cache.getRange(start, end);
+    // Optional: filter, transform, etc.
+    return objects;
+  }
+};
+```
+
+---
+
+## Best Practices
+
+<Tip>
+**Choose the Right Cache**:
+- `MemoryObjectCache` - VOD, recordings, static content
+- `RingBufferObjectCache` - Live streaming, sliding windows
+</Tip>
+
+<Warning>
+**Concurrency**: Cache implementations are **not thread-safe**. Avoid concurrent mutations from workers without synchronization.
+</Warning>
+
+<Info>
+**Cache Warming**: For hybrid tracks, populate the cache before starting live streaming:
+```typescript
+// Pre-populate with initial content
+initialObjects.forEach(obj => cache.add(obj));
+
+// Then start live ingestion
+const liveSource = new LiveTrackSource(liveStream);
+liveSource.onNewObject(obj => cache.add(obj));
+```
+</Info>
+
+---
+
+## Custom Implementation
+
+Implement your own cache for specialized needs:
+
+```typescript
+import { ObjectCache, MoqtObject, Location } from 'moqtail';
+
+class LRUObjectCache implements ObjectCache {
+  private cache = new Map<string, MoqtObject>();
+  private lru: string[] = [];
+  
+  constructor(private maxSize: number) {}
+  
+  add(obj: MoqtObject): void {
+    const key = `${obj.groupId}:${obj.objectId}`;
+    
+    // Remove if exists (update LRU)
+    if (this.cache.has(key)) {
+      this.lru = this.lru.filter(k => k !== key);
+    }
+    
+    // Add to cache and LRU
+    this.cache.set(key, obj);
+    this.lru.push(key);
+    
+    // Evict LRU if over capacity
+    if (this.cache.size > this.maxSize) {
+      const oldest = this.lru.shift()!;
+      this.cache.delete(oldest);
+    }
+  }
+  
+  getRange(start?: Location, end?: Location): MoqtObject[] {
+    // Filter and sort
+    const objects = Array.from(this.cache.values())
+      .filter(obj => {
+        if (start && obj.location.compare(start) < 0) return false;
+        if (end && obj.location.compare(end) >= 0) return false;
+        return true;
+      })
+      .sort((a, b) => a.location.compare(b.location));
+    
+    return objects;
+  }
+  
+  getByLocation(location: Location): MoqtObject | undefined {
+    const key = `${location.group}:${location.object}`;
+    const obj = this.cache.get(key);
+    
+    // Update LRU on access
+    if (obj) {
+      this.lru = this.lru.filter(k => k !== key);
+      this.lru.push(key);
+    }
+    
+    return obj;
+  }
+  
+  size(): number {
+    return this.cache.size;
+  }
+  
+  clear(): void {
+    this.cache.clear();
+    this.lru = [];
+  }
+}
+
+// Usage
+const lruCache = new LRUObjectCache(500);
+```
+
+---
+
+## See Also
+
+- [Content Source](/api/content-source) - TrackSource and PastObjectSource
+- [Track](/api/track) - Track definition and sources
+- [MoqtObject](/api/moqt-object) - Object structure
+- [MOQtailClient](/api/moqtail-client) - Client methods

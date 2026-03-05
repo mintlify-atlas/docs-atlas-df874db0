@@ -1,0 +1,692 @@
+---
+title: 'MoqtObject'
+description: 'Core data structure representing media/data objects in MOQT streams'
+---
+
+# MoqtObject
+
+The `MoqtObject` class is the fundamental unit of data in MOQtail, representing a single media or data object with associated metadata, location, and optional payload.
+
+## Overview
+
+A `MoqtObject` encapsulates:
+- **Location** - Group and object IDs
+- **Payload** - Optional raw bytes (media frame, data chunk, etc.)
+- **Status** - Object status (normal, end of group, end of track, does not exist)
+- **Metadata** - Priority, forwarding preference, extension headers
+- **Track Identity** - Full track name reference
+
+---
+
+## Class Definition
+
+```typescript
+class MoqtObject {
+  readonly fullTrackName: FullTrackName;
+  readonly location: Location;
+  readonly subgroupId: bigint | null;
+  readonly publisherPriority: number;
+  readonly objectForwardingPreference: ObjectForwardingPreference;
+  readonly objectStatus: ObjectStatus;
+  readonly extensionHeaders: KeyValuePair[] | null;
+  readonly payload: Uint8Array | null;
+}
+```
+
+---
+
+## Properties
+
+<ResponseField name="fullTrackName" type="FullTrackName">
+  Fully qualified track identifier this object belongs to
+</ResponseField>
+
+<ResponseField name="location" type="Location">
+  Position within the track: `{ group: bigint, object: bigint }`
+  
+  Accessible via:
+  - `location.group` or `groupId`
+  - `location.object` or `objectId`
+</ResponseField>
+
+<ResponseField name="subgroupId" type="bigint | null">
+  Subgroup identifier for subgroup-forwarded objects. `null` for datagram-forwarded objects.
+</ResponseField>
+
+<ResponseField name="publisherPriority" type="number">
+  Publisher-assigned priority (0 = highest, 255 = lowest)
+</ResponseField>
+
+<ResponseField name="objectForwardingPreference" type="ObjectForwardingPreference">
+  Delivery mechanism:
+  - `ObjectForwardingPreference.Subgroup` - Reliable ordered delivery
+  - `ObjectForwardingPreference.Datagram` - Unreliable low-latency delivery
+</ResponseField>
+
+<ResponseField name="objectStatus" type="ObjectStatus">
+  Status indicator:
+  - `ObjectStatus.Normal` (0x0) - Object exists with payload
+  - `ObjectStatus.DoesNotExist` (0x1) - Object does not exist
+  - `ObjectStatus.EndOfGroup` (0x3) - End of group marker
+  - `ObjectStatus.EndOfTrack` (0x4) - End of track marker
+</ResponseField>
+
+<ResponseField name="extensionHeaders" type="KeyValuePair[] | null">
+  Optional extension headers (e.g., capture timestamp, audio level). `null` if none.
+</ResponseField>
+
+<ResponseField name="payload" type="Uint8Array | null">
+  Raw object data bytes. `null` for status-only objects.
+</ResponseField>
+
+### Convenience Getters
+
+```typescript
+get groupId(): bigint        // Alias for location.group
+get objectId(): bigint       // Alias for location.object
+```
+
+---
+
+## Factory Methods
+
+### `newWithPayload()`
+
+Creates an object with payload data.
+
+```typescript
+static newWithPayload(
+  fullTrackName: FullTrackName,
+  location: Location,
+  publisherPriority: number,
+  objectForwardingPreference: ObjectForwardingPreference,
+  subgroupId: bigint | number | null,
+  extensionHeaders: KeyValuePair[] | null,
+  payload: Uint8Array
+): MoqtObject
+```
+
+<ParamField path="fullTrackName" type="FullTrackName" required>
+  Track identifier
+</ParamField>
+
+<ParamField path="location" type="Location" required>
+  Object position (group, object)
+</ParamField>
+
+<ParamField path="publisherPriority" type="number" required>
+  Priority (0-255)
+</ParamField>
+
+<ParamField path="objectForwardingPreference" type="ObjectForwardingPreference" required>
+  Delivery mechanism
+</ParamField>
+
+<ParamField path="subgroupId" type="bigint | number | null" required>
+  Subgroup ID (required for Subgroup preference, `null` for Datagram)
+</ParamField>
+
+<ParamField path="extensionHeaders" type="KeyValuePair[] | null" required>
+  Optional extension headers
+</ParamField>
+
+<ParamField path="payload" type="Uint8Array" required>
+  Object data
+</ParamField>
+
+<CodeGroup>
+```typescript Video Frame
+const videoFrame = MoqtObject.newWithPayload(
+  FullTrackName.tryNew('video/main', 'h264'),
+  new Location(42n, 0n), // Group 42, Object 0
+  0, // Highest priority
+  ObjectForwardingPreference.Subgroup,
+  0n, // Subgroup 0
+  null, // No extensions
+  frameBytes
+);
+```
+
+```typescript With Extensions
+const withMetadata = MoqtObject.newWithPayload(
+  fullTrackName,
+  new Location(100n, 5n),
+  128,
+  ObjectForwardingPreference.Subgroup,
+  1n,
+  [
+    KeyValuePair.tryNewVarInt(0x00, 1234567890), // Capture timestamp
+    KeyValuePair.tryNewVarInt(0x01, 100)         // Audio level
+  ],
+  audioData
+);
+```
+</CodeGroup>
+
+### `newWithStatus()`
+
+Creates a status-only object (no payload).
+
+```typescript
+static newWithStatus(
+  fullTrackName: FullTrackName,
+  location: Location,
+  publisherPriority: number,
+  objectForwardingPreference: ObjectForwardingPreference,
+  subgroupId: bigint | number | null,
+  extensionHeaders: KeyValuePair[] | null,
+  objectStatus: ObjectStatus
+): MoqtObject
+```
+
+<ParamField path="objectStatus" type="ObjectStatus" required>
+  Status code (cannot be `Normal`)
+</ParamField>
+
+<CodeGroup>
+```typescript End of Group
+const endOfGroup = MoqtObject.newWithStatus(
+  fullTrackName,
+  new Location(42n, 99n), // Last object in group 42
+  0,
+  ObjectForwardingPreference.Subgroup,
+  0n,
+  null,
+  ObjectStatus.EndOfGroup
+);
+```
+
+```typescript End of Track
+const endOfTrack = MoqtObject.newWithStatus(
+  fullTrackName,
+  new Location(999n, 0n),
+  0,
+  ObjectForwardingPreference.Subgroup,
+  null,
+  null,
+  ObjectStatus.EndOfTrack
+);
+```
+
+```typescript Does Not Exist
+const missing = MoqtObject.newWithStatus(
+  fullTrackName,
+  new Location(50n, 10n),
+  0,
+  ObjectForwardingPreference.Subgroup,
+  0n,
+  null,
+  ObjectStatus.DoesNotExist
+);
+```
+</CodeGroup>
+
+---
+
+## Conversion Methods
+
+### From Wire Formats
+
+#### `fromDatagramObject()`
+
+Converts a DatagramObject (received from datagrams) to MoqtObject.
+
+```typescript
+static fromDatagramObject(
+  datagramObject: DatagramObject,
+  fullTrackName: FullTrackName
+): MoqtObject
+```
+
+```typescript
+const datagramObj = DatagramObject.deserialize(buffer);
+const moqtObj = MoqtObject.fromDatagramObject(datagramObj, fullTrackName);
+```
+
+#### `fromDatagramStatus()`
+
+Converts a DatagramStatus to MoqtObject.
+
+```typescript
+static fromDatagramStatus(
+  datagramStatus: DatagramStatus,
+  fullTrackName: FullTrackName
+): MoqtObject
+```
+
+```typescript
+const status = DatagramStatus.deserialize(buffer);
+const moqtObj = MoqtObject.fromDatagramStatus(status, fullTrackName);
+```
+
+#### `fromFetchObject()`
+
+Converts a FetchObject (from fetch streams) to MoqtObject.
+
+```typescript
+static fromFetchObject(
+  fetchObject: FetchObject,
+  fullTrackName: FullTrackName
+): MoqtObject
+```
+
+```typescript
+const fetchObj = FetchObject.deserialize(buffer);
+const moqtObj = MoqtObject.fromFetchObject(fetchObj, fullTrackName);
+```
+
+#### `fromSubgroupObject()`
+
+Converts a SubgroupObject (from subgroup streams) to MoqtObject.
+
+```typescript
+static fromSubgroupObject(
+  subgroupObject: SubgroupObject,
+  groupId: bigint | number,
+  publisherPriority: number,
+  subgroupId: bigint | number,
+  fullTrackName: FullTrackName
+): MoqtObject
+```
+
+```typescript
+const subgroupObj = SubgroupObject.deserialize(buffer);
+const moqtObj = MoqtObject.fromSubgroupObject(
+  subgroupObj,
+  100n, // groupId
+  0,    // priority
+  0n,   // subgroupId
+  fullTrackName
+);
+```
+
+### To Wire Formats
+
+#### `tryIntoDatagramObject()`
+
+Converts to DatagramObject for transmission.
+
+```typescript
+tryIntoDatagramObject(
+  trackAlias: bigint | number,
+  endOfGroup: boolean = false
+): DatagramObject
+```
+
+<ParamField path="trackAlias" type="bigint | number" required>
+  Track alias to use in wire format
+</ParamField>
+
+<ParamField path="endOfGroup" type="boolean">
+  Whether this is the last object in the group (Draft-14)
+</ParamField>
+
+**Throws:**
+- `CastingError` - If forwarding preference is not `Datagram`
+- `ProtocolViolationError` - If object status is not `Normal` or payload is missing
+
+```typescript
+const datagramObj = moqtObj.tryIntoDatagramObject(trackAlias, false);
+const bytes = datagramObj.serialize().toUint8Array();
+await datagramWriter.write(bytes);
+```
+
+#### `tryIntoDatagramStatus()`
+
+Converts to DatagramStatus for transmission.
+
+```typescript
+tryIntoDatagramStatus(trackAlias: bigint | number): DatagramStatus
+```
+
+**Throws:**
+- `CastingError` - If forwarding preference is not `Datagram`
+- `ProtocolViolationError` - If object status is `Normal`
+
+```typescript
+const datagramStatus = moqtObj.tryIntoDatagramStatus(trackAlias);
+const bytes = datagramStatus.serialize().toUint8Array();
+await datagramWriter.write(bytes);
+```
+
+#### `tryIntoFetchObject()`
+
+Converts to FetchObject for fetch responses.
+
+```typescript
+tryIntoFetchObject(): FetchObject
+```
+
+**Throws:**
+- `CastingError` - If forwarding preference is not `Subgroup`
+- `ProtocolViolationError` - If subgroupId is null
+
+```typescript
+const fetchObj = moqtObj.tryIntoFetchObject();
+const bytes = fetchObj.serialize().toUint8Array();
+await stream.write(bytes);
+```
+
+#### `tryIntoSubgroupObject()`
+
+Converts to SubgroupObject for subgroup streams.
+
+```typescript
+tryIntoSubgroupObject(): SubgroupObject
+```
+
+**Throws:**
+- `CastingError` - If forwarding preference is not `Subgroup`
+
+```typescript
+const subgroupObj = moqtObj.tryIntoSubgroupObject();
+const bytes = subgroupObj.serialize().toUint8Array();
+await stream.write(bytes);
+```
+
+---
+
+## Utility Methods
+
+### Type Checks
+
+```typescript
+isDatagram(): boolean       // True if forwarding preference is Datagram
+isSubgroup(): boolean       // True if forwarding preference is Subgroup
+isEndOfGroup(): boolean     // True if status is EndOfGroup
+isEndOfTrack(): boolean     // True if status is EndOfTrack
+doesNotExist(): boolean     // True if status is DoesNotExist
+hasPayload(): boolean       // True if payload is not null
+hasStatus(): boolean        // True if status is not Normal
+```
+
+<CodeGroup>
+```typescript Check Object Type
+if (obj.isDatagram()) {
+  // Handle datagram object
+  await sendViaDatagram(obj);
+} else if (obj.isSubgroup()) {
+  // Handle subgroup object
+  await sendViaStream(obj);
+}
+```
+
+```typescript Check for End Markers
+if (obj.isEndOfGroup()) {
+  console.log('End of group', obj.groupId);
+  processGroup(currentGroup);
+  currentGroup = [];
+} else if (obj.isEndOfTrack()) {
+  console.log('Track ended');
+  finalizeTrack();
+}
+```
+
+```typescript Check Content
+if (obj.hasPayload()) {
+  console.log('Payload size:', obj.payload.length);
+  processPayload(obj.payload);
+} else if (obj.hasStatus()) {
+  console.log('Status object:', obj.objectStatus);
+}
+```
+</CodeGroup>
+
+### Special Methods
+
+#### `getSubgroupHeaderType()`
+
+Determines the appropriate subgroup header type based on object properties.
+
+```typescript
+getSubgroupHeaderType(containsEnd: boolean): SubgroupHeaderType
+```
+
+<ParamField path="containsEnd" type="boolean" required>
+  Whether this object contains end-of-group or end-of-track status
+</ParamField>
+
+<ResponseField name="return" type="SubgroupHeaderType">
+  Appropriate header type (0x10-0x1D)
+</ResponseField>
+
+#### `isDatagramEndOfGroup()` (Static)
+
+Checks if a DatagramObject has the end-of-group flag set (Draft-14).
+
+```typescript
+static isDatagramEndOfGroup(datagramObject: DatagramObject): boolean
+```
+
+<Info>
+This is separate from `ObjectStatus.EndOfGroup` - the flag indicates this is the last object in the group even with `Normal` status.
+</Info>
+
+---
+
+## Location Class
+
+The `Location` class represents a position within a track.
+
+### Constructor
+
+```typescript
+const location = new Location(
+  group: bigint | number,
+  object: bigint | number
+)
+```
+
+<ParamField path="group" type="bigint | number" required>
+  Group index (e.g., segment, GOP, logical group)
+</ParamField>
+
+<ParamField path="object" type="bigint | number" required>
+  Object index within the group (e.g., frame, chunk)
+</ParamField>
+
+### Properties
+
+```typescript
+readonly group: bigint    // Group index
+readonly object: bigint   // Object index
+```
+
+### Methods
+
+#### `equals()`
+
+Checks equality with another location.
+
+```typescript
+equals(other: Location): boolean
+```
+
+```typescript
+if (loc1.equals(loc2)) {
+  console.log('Same location');
+}
+```
+
+#### `compare()`
+
+Compares locations for ordering.
+
+```typescript
+compare(other: Location): number
+```
+
+<ResponseField name="return" type="number">
+  -1 if this < other, 1 if this > other, 0 if equal
+</ResponseField>
+
+```typescript
+if (loc1.compare(loc2) < 0) {
+  console.log('loc1 comes before loc2');
+}
+```
+
+#### `serialize()` / `deserialize()`
+
+```typescript
+serialize(): FrozenByteBuffer
+static deserialize(buf: BaseByteBuffer): Location
+```
+
+---
+
+## Usage Examples
+
+### Creating Objects
+
+<CodeGroup>
+```typescript Simple Payload Object
+const obj = MoqtObject.newWithPayload(
+  FullTrackName.tryNew('video/main', 'h264'),
+  new Location(100n, 0n),
+  0,
+  ObjectForwardingPreference.Subgroup,
+  0n,
+  null,
+  videoFrameBytes
+);
+```
+
+```typescript Datagram Object
+const datagramObj = MoqtObject.newWithPayload(
+  FullTrackName.tryNew('game/state', 'updates'),
+  new Location(42n, 7n),
+  0,
+  ObjectForwardingPreference.Datagram,
+  null, // No subgroup for datagrams
+  null,
+  stateData
+);
+```
+
+```typescript Status Object
+const endMarker = MoqtObject.newWithStatus(
+  fullTrackName,
+  new Location(100n, 99n),
+  0,
+  ObjectForwardingPreference.Subgroup,
+  0n,
+  null,
+  ObjectStatus.EndOfGroup
+);
+```
+</CodeGroup>
+
+### Processing Objects from Streams
+
+```typescript
+const result = await client.subscribe({
+  fullTrackName,
+  filterType: FilterType.LatestObject,
+  forward: true,
+  groupOrder: GroupOrder.Original,
+  priority: 0
+});
+
+if (!(result instanceof SubscribeError)) {
+  for await (const obj of result.stream) {
+    console.log(`Object: group=${obj.groupId}, object=${obj.objectId}`);
+    
+    if (obj.hasPayload()) {
+      // Process payload
+      await processFrame(obj.payload);
+    }
+    
+    if (obj.isEndOfGroup()) {
+      console.log('End of group marker received');
+      await finalizeGroup(obj.groupId);
+    }
+    
+    if (obj.isEndOfTrack()) {
+      console.log('Track ended');
+      break;
+    }
+  }
+}
+```
+
+### Sending Objects
+
+<CodeGroup>
+```typescript Via Subgroup Stream
+const obj = MoqtObject.newWithPayload(
+  fullTrackName,
+  location,
+  0,
+  ObjectForwardingPreference.Subgroup,
+  0n,
+  null,
+  payload
+);
+
+const subgroupObj = obj.tryIntoSubgroupObject();
+const bytes = subgroupObj.serialize().toUint8Array();
+await streamWriter.write(bytes);
+```
+
+```typescript Via Datagram
+const obj = MoqtObject.newWithPayload(
+  fullTrackName,
+  location,
+  0,
+  ObjectForwardingPreference.Datagram,
+  null,
+  null,
+  payload
+);
+
+await client.sendDatagram(trackAlias, obj);
+```
+</CodeGroup>
+
+---
+
+## Best Practices
+
+<Tip>
+**Location Ordering**: Objects within a group should have sequential object IDs starting from 0:
+```typescript
+for (let i = 0; i < framesInGroup; i++) {
+  const obj = MoqtObject.newWithPayload(
+    fullTrackName,
+    new Location(groupId, i),
+    // ...
+  );
+}
+```
+</Tip>
+
+<Warning>
+**Status vs Payload**: Objects cannot have both status (other than Normal) and payload. Use separate objects for status markers:
+```typescript
+// Last payload object
+const lastObj = MoqtObject.newWithPayload(/* ... */, payload);
+
+// End of group marker (separate)
+const endMarker = MoqtObject.newWithStatus(/* ... */, ObjectStatus.EndOfGroup);
+```
+</Warning>
+
+<Info>
+**Datagram Constraints**: Datagram objects should be small (typically < 1200 bytes) to avoid fragmentation:
+```typescript
+if (payload.length > 1200) {
+  // Use subgroup forwarding instead
+  objectForwardingPreference = ObjectForwardingPreference.Subgroup;
+}
+```
+</Info>
+
+---
+
+## See Also
+
+- [Track](/api/track) - Track definition and management
+- [Content Source](/api/content-source) - Creating object streams
+- [Object Cache](/api/object-cache) - Caching objects
+- [MOQtailClient](/api/moqtail-client) - Client methods

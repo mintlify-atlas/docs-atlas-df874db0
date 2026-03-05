@@ -1,0 +1,494 @@
+---
+title: 'Content Source'
+description: 'Track content sources for live and historical object delivery'
+---
+
+# Content Source
+
+Content sources define where track data comes from - either live streaming, historical caches, or both. The `TrackSource` interface and its implementations provide the foundation for track publishing in MOQtail.
+
+## Overview
+
+A `TrackSource` can provide:
+- **Live objects** via `LiveObjectSource` - Real-time streaming from a `ReadableStream`
+- **Past objects** via `PastObjectSource` - Historical retrieval from an `ObjectCache`
+- **Both** - Hybrid live streaming with catch-up support
+
+---
+
+## TrackSource Interface
+
+```typescript
+interface TrackSource {
+  readonly past?: PastObjectSource;
+  readonly live?: LiveObjectSource;
+}
+```
+
+<ParamField path="past" type="PastObjectSource">
+  Optional historical object access via cache-backed range queries
+</ParamField>
+
+<ParamField path="live" type="LiveObjectSource">
+  Optional live object feed via streaming
+</ParamField>
+
+<Info>
+At least one of `past` or `live` must be provided. Tracks can support:
+- **VOD/static**: Only `past`
+- **Pure live**: Only `live`
+- **Hybrid**: Both `past` and `live`
+</Info>
+
+---
+
+## LiveObjectSource
+
+Provides push-oriented live object feed from a `ReadableStream`.
+
+### Interface
+
+```typescript
+interface LiveObjectSource {
+  readonly stream: ReadableStream<MoqtObject>;
+  readonly largestLocation: Location | undefined;
+  onNewObject(listener: (obj: MoqtObject) => void): () => void;
+  onDone(listener: () => void): () => void;
+  stop(): void;
+}
+```
+
+### Properties
+
+<ResponseField name="stream" type="ReadableStream<MoqtObject>" required>
+  Continuous stream yielding objects as they are produced
+</ResponseField>
+
+<ResponseField name="largestLocation" type="Location | undefined">
+  Highest (latest) location observed so far; `undefined` until first object arrives
+</ResponseField>
+
+### Methods
+
+#### `onNewObject()`
+
+Registers a listener invoked for each new object.
+
+```typescript
+onNewObject(listener: (obj: MoqtObject) => void): () => void
+```
+
+<ParamField path="listener" type="(obj: MoqtObject) => void" required>
+  Function called asynchronously for each new object
+</ParamField>
+
+<ResponseField name="return" type="() => void">
+  Unsubscribe function to remove the listener
+</ResponseField>
+
+#### `onDone()`
+
+Registers a listener invoked when the live stream ends.
+
+```typescript
+onDone(listener: () => void): () => void
+```
+
+<ParamField path="listener" type="() => void" required>
+  Function called when stream ends (normal or error)
+</ParamField>
+
+<ResponseField name="return" type="() => void">
+  Unsubscribe function to remove the listener
+</ResponseField>
+
+#### `stop()`
+
+Stops ingestion and releases underlying reader. Idempotent.
+
+```typescript
+stop(): void
+```
+
+---
+
+## PastObjectSource
+
+Provides historical object access via cache-backed range queries.
+
+### Interface
+
+```typescript
+interface PastObjectSource {
+  readonly cache: ObjectCache;
+  getRange(start?: Location, end?: Location): Promise<MoqtObject[]>;
+}
+```
+
+### Properties
+
+<ResponseField name="cache" type="ObjectCache" required>
+  Underlying cache from which objects are served. See [ObjectCache](/api/object-cache).
+</ResponseField>
+
+### Methods
+
+#### `getRange()`
+
+Fetches a closed range of objects.
+
+```typescript
+getRange(start?: Location, end?: Location): Promise<MoqtObject[]>
+```
+
+<ParamField path="start" type="Location">
+  Inclusive start location. If omitted, returns from earliest cached object.
+</ParamField>
+
+<ParamField path="end" type="Location">
+  Inclusive end location. If omitted, returns up to latest cached object.
+</ParamField>
+
+<ResponseField name="return" type="Promise<MoqtObject[]>">
+  Objects in ascending location order. May be empty if requested window is outside cached range.
+</ResponseField>
+
+<Warning>
+Implementations MUST return objects in ascending location order.
+</Warning>
+
+---
+
+## Implementations
+
+### LiveTrackSource
+
+Concrete implementation of `LiveObjectSource`.
+
+#### Constructor
+
+```typescript
+const liveSource = new LiveTrackSource(stream: ReadableStream<MoqtObject>)
+```
+
+<ParamField path="stream" type="ReadableStream<MoqtObject>" required>
+  Stream of MoqtObjects to publish live
+</ParamField>
+
+#### Example
+
+```typescript
+import { LiveTrackSource, MoqtObject } from 'moqtail';
+
+// Create a stream of objects (e.g., from video encoder)
+const liveStream = new ReadableStream<MoqtObject>({
+  async start(controller) {
+    // Produce objects
+    for (let i = 0; i < 100; i++) {
+      const obj = MoqtObject.newWithPayload(
+        fullTrackName,
+        new Location(i, 0),
+        0, // priority
+        ObjectForwardingPreference.Subgroup,
+        null,
+        null,
+        new TextEncoder().encode(`Object ${i}`)
+      );
+      controller.enqueue(obj);
+      await sleep(33); // ~30fps
+    }
+    controller.close();
+  }
+});
+
+const liveSource = new LiveTrackSource(liveStream);
+
+// Listen to new objects
+const unsubscribe = liveSource.onNewObject((obj) => {
+  console.log('New object:', obj.groupId, obj.objectId);
+});
+
+// Listen for stream end
+liveSource.onDone(() => {
+  console.log('Live stream ended');
+  unsubscribe();
+});
+```
+
+### StaticTrackSource
+
+Concrete implementation of `PastObjectSource`.
+
+#### Constructor
+
+```typescript
+const staticSource = new StaticTrackSource(cache: ObjectCache)
+```
+
+<ParamField path="cache" type="ObjectCache" required>
+  ObjectCache instance containing historical objects
+</ParamField>
+
+#### Example
+
+```typescript
+import { StaticTrackSource, MemoryObjectCache, MoqtObject } from 'moqtail';
+
+// Create and populate cache
+const cache = new MemoryObjectCache();
+for (let i = 0; i < 100; i++) {
+  const obj = MoqtObject.newWithPayload(
+    fullTrackName,
+    new Location(i, 0),
+    0,
+    ObjectForwardingPreference.Subgroup,
+    null,
+    null,
+    new TextEncoder().encode(`Cached object ${i}`)
+  );
+  cache.add(obj);
+}
+
+const staticSource = new StaticTrackSource(cache);
+
+// Fetch range
+const objects = await staticSource.getRange(
+  new Location(10, 0),
+  new Location(20, 0)
+);
+console.log(`Fetched ${objects.length} objects`);
+```
+
+### HybridTrackSource
+
+Combines both live and past sources.
+
+#### Constructor
+
+```typescript
+const hybridSource = new HybridTrackSource(
+  cache: ObjectCache,
+  stream: ReadableStream<MoqtObject>
+)
+```
+
+<ParamField path="cache" type="ObjectCache" required>
+  Cache for historical objects
+</ParamField>
+
+<ParamField path="stream" type="ReadableStream<MoqtObject>" required>
+  Live stream of new objects
+</ParamField>
+
+#### Example
+
+```typescript
+import { HybridTrackSource, MemoryObjectCache } from 'moqtail';
+
+const cache = new MemoryObjectCache();
+const liveStream = createLiveStream();
+
+// Create hybrid source
+const hybridSource = new HybridTrackSource(cache, liveStream);
+
+// Cache live objects as they arrive
+hybridSource.live.onNewObject((obj) => {
+  cache.add(obj);
+});
+
+// Use in track
+client.addOrUpdateTrack({
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: hybridSource,
+  publisherPriority: 0
+});
+```
+
+---
+
+## Usage Patterns
+
+### Live-Only Publishing
+
+```typescript
+import { LiveTrackSource } from 'moqtail';
+
+const liveStream = createVideoStream(); // Your stream source
+const trackSource: TrackSource = {
+  live: new LiveTrackSource(liveStream)
+};
+
+client.addOrUpdateTrack({
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource,
+  publisherPriority: 0
+});
+```
+
+### VOD/Static Content
+
+```typescript
+import { StaticTrackSource, MemoryObjectCache } from 'moqtail';
+
+const cache = new MemoryObjectCache();
+// Populate cache with pre-recorded content
+recording.forEach(obj => cache.add(obj));
+
+const trackSource: TrackSource = {
+  past: new StaticTrackSource(cache)
+};
+
+client.addOrUpdateTrack({
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource,
+  publisherPriority: 64
+});
+```
+
+### Hybrid Live + Catch-Up
+
+```typescript
+import { HybridTrackSource, RingBufferObjectCache } from 'moqtail';
+
+// Ring buffer keeps last N objects
+const cache = new RingBufferObjectCache(500);
+const liveStream = createLiveStream();
+
+const hybrid = new HybridTrackSource(cache, liveStream);
+
+// Auto-cache live objects
+hybrid.live.onNewObject(obj => cache.add(obj));
+
+const trackSource: TrackSource = hybrid;
+
+client.addOrUpdateTrack({
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource,
+  publisherPriority: 8
+});
+```
+
+### Manual TrackSource Object
+
+Create a custom source:
+
+```typescript
+const customSource: TrackSource = {
+  live: {
+    stream: liveStream,
+    largestLocation: undefined,
+    onNewObject: (listener) => { /* ... */ return () => {} },
+    onDone: (listener) => { /* ... */ return () => {} },
+    stop: () => { /* ... */ }
+  },
+  past: {
+    cache: myCache,
+    getRange: async (start, end) => {
+      return myCache.getRange(start, end);
+    }
+  }
+};
+```
+
+---
+
+## Stream Creation Patterns
+
+### From Generator
+
+```typescript
+async function* generateObjects() {
+  for (let i = 0; i < 1000; i++) {
+    yield MoqtObject.newWithPayload(
+      fullTrackName,
+      new Location(i, 0),
+      0,
+      ObjectForwardingPreference.Subgroup,
+      null,
+      null,
+      new TextEncoder().encode(`Frame ${i}`)
+    );
+    await sleep(33); // 30fps
+  }
+}
+
+const stream = ReadableStream.from(generateObjects());
+const liveSource = new LiveTrackSource(stream);
+```
+
+### From Event Source
+
+```typescript
+const stream = new ReadableStream<MoqtObject>({
+  start(controller) {
+    encoder.addEventListener('frame', (event) => {
+      const obj = encodeToMoqtObject(event.frame);
+      controller.enqueue(obj);
+    });
+    
+    encoder.addEventListener('end', () => {
+      controller.close();
+    });
+  },
+  cancel() {
+    encoder.stop();
+  }
+});
+
+const liveSource = new LiveTrackSource(stream);
+```
+
+### From Transform
+
+```typescript
+const rawStream = getRawDataStream();
+
+const objectStream = rawStream.pipeThrough(
+  new TransformStream<RawData, MoqtObject>({
+    transform(chunk, controller) {
+      const obj = convertToMoqtObject(chunk);
+      controller.enqueue(obj);
+    }
+  })
+);
+
+const liveSource = new LiveTrackSource(objectStream);
+```
+
+---
+
+## Best Practices
+
+<Tip>
+**Cache Live Objects**: For hybrid sources, cache live objects as they're produced:
+```typescript
+hybridSource.live.onNewObject(obj => cache.add(obj));
+```
+</Tip>
+
+<Warning>
+**Memory Management**: Use `RingBufferObjectCache` for live streams to prevent unbounded memory growth:
+```typescript
+const cache = new RingBufferObjectCache(1000); // Keep last 1000 objects
+```
+</Warning>
+
+<Info>
+**Stream Cleanup**: Always call `stop()` on `LiveObjectSource` when done to release resources:
+```typescript
+liveSource.stop();
+```
+</Info>
+
+---
+
+## See Also
+
+- [Track](/api/track) - Track definition and management
+- [Object Cache](/api/object-cache) - Cache implementations
+- [MoqtObject](/api/moqt-object) - Object structure
+- [MOQtailClient](/api/moqtail-client) - Client methods

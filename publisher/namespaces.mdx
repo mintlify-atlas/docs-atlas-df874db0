@@ -1,0 +1,495 @@
+---
+title: 'Namespaces'
+description: 'Organize tracks using hierarchical namespaces and announce them for discovery'
+---
+
+## Overview
+
+Namespaces in MOQT provide hierarchical organization for tracks, similar to file system directories. Publishers announce namespaces to make their tracks discoverable by subscribers. The namespace system enables efficient filtering and routing of content across the network.
+
+<Note>
+A namespace is a tuple of string segments (e.g., `['live', 'conference', 'room42']`) that forms the first part of a track's full name.
+</Note>
+
+## Namespace Structure
+
+Namespaces are represented by the `Tuple` class:
+
+```typescript
+import { Tuple } from 'moqtail-ts'
+
+// Create from string path
+const namespace = Tuple.fromUtf8Path('live/conference/room42')
+console.log(namespace.fields) // ['live', 'conference', 'room42']
+
+// Create from array
+const namespace2 = Tuple.tryNew(['media', 'camera', 'main'])
+
+// Convert back to path
+console.log(namespace.toUtf8Path()) // 'live/conference/room42'
+```
+
+<Warning>
+- Namespace must have 1-32 segments
+- Empty segments are allowed except at start/end
+- Total serialized length (namespace + track name) must be under 4096 bytes
+</Warning>
+
+## Full Track Names
+
+A full track name combines namespace and name:
+
+```typescript
+import { FullTrackName, Tuple } from 'moqtail-ts'
+
+// Using string path (namespace/name)
+const trackName = FullTrackName.tryNew('live/conference', 'video')
+
+// Using Tuple
+const namespace = Tuple.tryNew(['live', 'conference'])
+const trackName2 = FullTrackName.tryNew(namespace, 'audio')
+
+// String representation
+console.log(trackName.toString())
+// Output: live/conference:766964656f (name in hex)
+```
+
+### Naming Best Practices
+
+<Steps>
+
+<Step title="Use Hierarchical Structure">
+Organize namespaces to reflect your application hierarchy:
+
+```typescript
+// Good: hierarchical and descriptive
+'app/feature/resource'
+'live/event/stadium-a'
+'vod/movies/action'
+'sensors/building-1/floor-3'
+
+// Avoid: flat structure
+'video-stream-42'
+'data'
+```
+</Step>
+
+<Step title="Consistent Separators">
+Always use `/` as the separator:
+
+```typescript
+// Good
+FullTrackName.tryNew('media/conference/room', 'video')
+
+// Avoid mixing separators
+// 'media-conference/room' or 'media.conference.room'
+```
+</Step>
+
+<Step title="Descriptive Names">
+Use clear, self-documenting names:
+
+```typescript
+// Good
+FullTrackName.tryNew('broadcast/sports/game-123', 'video-high')
+FullTrackName.tryNew('broadcast/sports/game-123', 'video-low')
+FullTrackName.tryNew('broadcast/sports/game-123', 'audio-english')
+
+// Avoid abbreviations
+FullTrackName.tryNew('bc/sp/g123', 'v-h')
+```
+</Step>
+
+</Steps>
+
+## Publishing Namespaces
+
+Before subscribers can discover your tracks, you must announce the namespace:
+
+```typescript
+import { MOQtailClient } from 'moqtail-ts'
+
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com',
+  supportedVersions: [0xff00000b]
+})
+
+// Announce namespace (array form)
+const result = await client.publishNamespace(['live', 'conference'])
+
+if (result instanceof PublishNamespaceError) {
+  console.error(`Failed to announce: ${result.reasonPhrase}`)
+} else {
+  console.log('Namespace announced successfully')
+}
+```
+
+### Announcement Workflow
+
+<Steps>
+
+<Step title="Register Tracks">
+Add all tracks under the namespace first:
+
+```typescript
+const videoTrack: Track = {
+  fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { live: videoSource },
+  publisherPriority: 0
+}
+
+const audioTrack: Track = {
+  fullTrackName: FullTrackName.tryNew('live/conference', 'audio'),
+  forwardingPreference: ObjectForwardingPreference.Datagram,
+  trackSource: { live: audioSource },
+  publisherPriority: 8
+}
+
+client.addOrUpdateTrack(videoTrack)
+client.addOrUpdateTrack(audioTrack)
+```
+</Step>
+
+<Step title="Announce Namespace">
+Make the namespace discoverable:
+
+```typescript
+await client.publishNamespace(['live', 'conference'])
+```
+</Step>
+
+<Step title="Handle Subscriptions">
+Subscribers can now discover and subscribe to tracks under this namespace.
+</Step>
+
+</Steps>
+
+## Namespace Discovery
+
+Subscribers discover namespaces by subscribing to namespace prefixes:
+
+```typescript
+// Subscriber code
+import { SubscribeNamespace, Tuple } from 'moqtail-ts'
+
+// Subscribe to all 'live' namespaces
+await client.subscribeNamespace(Tuple.tryNew(['live']))
+
+// Client will receive announcements for:
+// - live/conference
+// - live/sports
+// - live/music
+// etc.
+```
+
+### Publisher-Side Handlers
+
+Publishers can track namespace subscription requests:
+
+```typescript
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com',
+  supportedVersions: [0xff00000b],
+  callbacks: {
+    onPeerSubscribeNamespace: (msg) => {
+      console.log('Peer subscribed to namespace:', msg.namespace.toUtf8Path())
+    }
+  }
+})
+```
+
+## Stopping Announcements
+
+When you're done publishing a namespace:
+
+```typescript
+import { PublishNamespaceDone } from 'moqtail-ts'
+
+// Stop announcing namespace
+await client.publishNamespaceDone(['live', 'conference'])
+```
+
+<Note>
+Stopping an announcement notifies subscribers that tracks under this namespace are no longer available, but doesn't cancel active subscriptions immediately.
+</Note>
+
+## Complete Publisher Example
+
+Here's a complete example with multiple tracks under a namespace:
+
+```typescript
+import {
+  MOQtailClient,
+  FullTrackName,
+  Track,
+  LiveTrackSource,
+  ObjectForwardingPreference,
+  MoqtObject
+} from 'moqtail-ts'
+
+class ConferencePublisher {
+  private client?: MOQtailClient
+  private namespace: string[]
+  
+  constructor(
+    private roomId: string
+  ) {
+    this.namespace = ['conference', roomId]
+  }
+  
+  async start(relayUrl: string) {
+    // 1. Connect to relay
+    this.client = await MOQtailClient.new({
+      url: relayUrl,
+      supportedVersions: [0xff00000b],
+      callbacks: {
+        onPeerSubscribeNamespace: (msg) => {
+          console.log('Subscriber interested in:', msg.namespace.toUtf8Path())
+        },
+        onNamespaceDone: (msg) => {
+          console.log('Namespace ended:', msg.namespace.toUtf8Path())
+        }
+      }
+    })
+    
+    // 2. Create tracks
+    const tracks = await this.createTracks()
+    
+    // 3. Register all tracks
+    for (const track of tracks) {
+      this.client.addOrUpdateTrack(track)
+    }
+    
+    // 4. Announce namespace
+    const result = await this.client.publishNamespace(this.namespace)
+    
+    if (result instanceof PublishNamespaceError) {
+      throw new Error(`Failed to announce namespace: ${result.reasonPhrase}`)
+    }
+    
+    console.log(`Publishing namespace: ${this.namespace.join('/')}`)
+  }
+  
+  private async createTracks(): Promise<Track[]> {
+    // Get media streams
+    const mediaStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 1920, height: 1080 },
+      audio: true
+    })
+    
+    // Create video track
+    const videoStream = this.createVideoStream(mediaStream.getVideoTracks()[0])
+    const videoTrack: Track = {
+      fullTrackName: FullTrackName.tryNew(this.namespace.join('/'), 'video'),
+      forwardingPreference: ObjectForwardingPreference.Subgroup,
+      trackSource: { live: new LiveTrackSource(videoStream) },
+      publisherPriority: 0
+    }
+    
+    // Create audio track
+    const audioStream = this.createAudioStream(mediaStream.getAudioTracks()[0])
+    const audioTrack: Track = {
+      fullTrackName: FullTrackName.tryNew(this.namespace.join('/'), 'audio'),
+      forwardingPreference: ObjectForwardingPreference.Datagram,
+      trackSource: { live: new LiveTrackSource(audioStream) },
+      publisherPriority: 8
+    }
+    
+    // Create metadata track (chat, participant list, etc.)
+    const metadataStream = this.createMetadataStream()
+    const metadataTrack: Track = {
+      fullTrackName: FullTrackName.tryNew(this.namespace.join('/'), 'metadata'),
+      forwardingPreference: ObjectForwardingPreference.Subgroup,
+      trackSource: { live: new LiveTrackSource(metadataStream) },
+      publisherPriority: 32
+    }
+    
+    return [videoTrack, audioTrack, metadataTrack]
+  }
+  
+  private createVideoStream(track: MediaStreamTrack): ReadableStream<MoqtObject> {
+    // Implementation from live-streaming.mdx
+    return new ReadableStream<MoqtObject>({/* ... */})
+  }
+  
+  private createAudioStream(track: MediaStreamTrack): ReadableStream<MoqtObject> {
+    // Implementation from live-streaming.mdx
+    return new ReadableStream<MoqtObject>({/* ... */})
+  }
+  
+  private createMetadataStream(): ReadableStream<MoqtObject> {
+    return new ReadableStream<MoqtObject>({
+      start: (controller) => {
+        // Emit periodic metadata updates
+        setInterval(() => {
+          const metadata = JSON.stringify({
+            timestamp: Date.now(),
+            participants: this.getParticipants(),
+            messages: this.getRecentMessages()
+          })
+          
+          const object = MoqtObject.newWithPayload(
+            FullTrackName.tryNew(this.namespace.join('/'), 'metadata'),
+            new Location(Date.now(), 0n),
+            32,
+            ObjectForwardingPreference.Subgroup,
+            null,
+            null,
+            new TextEncoder().encode(metadata)
+          )
+          
+          controller.enqueue(object)
+        }, 1000)
+      }
+    })
+  }
+  
+  async stop() {
+    if (!this.client) return
+    
+    // Announce namespace is done
+    await this.client.publishNamespaceDone(this.namespace)
+    
+    // Disconnect
+    await this.client.disconnect()
+    
+    console.log(`Stopped publishing namespace: ${this.namespace.join('/')}`)
+  }
+  
+  private getParticipants() {
+    // Return current participants
+    return []
+  }
+  
+  private getRecentMessages() {
+    // Return recent chat messages
+    return []
+  }
+}
+
+// Usage
+const publisher = new ConferencePublisher('room-42')
+await publisher.start('https://relay.example.com')
+
+// Later, when conference ends
+await publisher.stop()
+```
+
+## Hierarchical Namespace Management
+
+Organize complex applications with namespace hierarchies:
+
+```typescript
+// Multi-tenant application
+class MultiTenantPublisher {
+  async publishForTenant(tenantId: string, applicationId: string) {
+    const client = await MOQtailClient.new({/* ... */})
+    
+    // Announce top-level namespace for tenant
+    await client.publishNamespace([tenantId])
+    
+    // Announce application namespace
+    await client.publishNamespace([tenantId, applicationId])
+    
+    // Add tracks under application namespace
+    const videoTrack: Track = {
+      fullTrackName: FullTrackName.tryNew(
+        `${tenantId}/${applicationId}/streams`,
+        'video-main'
+      ),
+      // ...
+    }
+    
+    client.addOrUpdateTrack(videoTrack)
+    
+    // Subscribers can discover:
+    // - All content: subscribeNamespace([tenantId])
+    // - Specific app: subscribeNamespace([tenantId, applicationId])
+    // - Specific streams: subscribeNamespace([tenantId, applicationId, 'streams'])
+  }
+}
+```
+
+## Error Handling
+
+Handle namespace announcement failures:
+
+```typescript
+import { PublishNamespaceError } from 'moqtail-ts'
+
+const result = await client.publishNamespace(['live', 'conference'])
+
+if (result instanceof PublishNamespaceError) {
+  switch (result.errorCode) {
+    case PublishNamespaceErrorCode.Forbidden:
+      console.error('Not authorized to publish this namespace')
+      break
+    case PublishNamespaceErrorCode.InvalidNamespace:
+      console.error('Invalid namespace format')
+      break
+    default:
+      console.error(`Announcement failed: ${result.reasonPhrase}`)
+  }
+} else {
+  console.log('Namespace announced successfully')
+}
+```
+
+## Best Practices
+
+<Card title="Namespace Granularity" icon="sitemap">
+- Use 2-4 levels for most applications
+- Too shallow: poor filtering (`['content']`)
+- Too deep: hard to manage (`['app', 'region', 'datacenter', 'rack', 'server', 'process', 'stream']`)
+- Just right: `['app', 'feature', 'resource']`
+</Card>
+
+<Card title="Track Organization" icon="layer-group">
+Group related tracks under the same namespace:
+
+```typescript
+// Good: related tracks together
+'conference/room42' → 'video', 'audio', 'chat'
+
+// Avoid: unrelated tracks
+'conference' → 'room42-video', 'room42-audio', 'room99-video'
+```
+</Card>
+
+<Card title="Lifecycle Management" icon="recycle">
+```typescript
+// Announce when ready
+await client.publishNamespace(namespace)
+
+// Track active namespaces
+const activeNamespaces = new Set<string>()
+activeNamespaces.add(namespace.join('/'))
+
+// Clean up on shutdown
+for (const ns of activeNamespaces) {
+  await client.publishNamespaceDone(ns.split('/'))
+}
+```
+</Card>
+
+<Card title="Discovery Optimization" icon="magnifying-glass">
+Announce at appropriate levels for discovery:
+
+```typescript
+// Announce both parent and specific namespaces
+await client.publishNamespace(['live'])           // For broad discovery
+await client.publishNamespace(['live', 'sports']) // For specific discovery
+```
+</Card>
+
+## Next Steps
+
+<CardGroup cols={2}>
+<Card title="Creating Tracks" icon="plus" href="/publisher/creating-tracks">
+Learn the fundamentals of track creation
+</Card>
+<Card title="Live Streaming" icon="tower-broadcast" href="/publisher/live-streaming">
+Publish real-time content to subscribers
+</Card>
+</CardGroup>

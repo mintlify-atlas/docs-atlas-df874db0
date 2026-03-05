@@ -1,0 +1,294 @@
+---
+title: 'MOQT Protocol'
+description: 'Understanding Media over QUIC Transport protocol fundamentals'
+---
+
+## What is MOQT?
+
+Media over QUIC Transport (MOQT) is a protocol designed for efficient delivery of live and on-demand media content over QUIC connections. Built on top of QUIC's reliable transport layer, MOQT enables low-latency streaming while maintaining the flexibility to handle various media delivery patterns.
+
+<Note>
+MOQtail implements **Draft-14** of the MOQT specification (`0xff00000e`). The protocol is under active development and may evolve as the specification matures.
+</Note>
+
+## Core Protocol Features
+
+### QUIC Foundation
+
+MOQT leverages QUIC's features to optimize media delivery:
+
+- **Multiple streams**: Independent delivery paths for different content
+- **Stream prioritization**: Control which content gets bandwidth priority
+- **Connection migration**: Seamless network transitions
+- **Built-in encryption**: TLS 1.3 security by default
+
+### WebTransport Integration
+
+MOQtail uses WebTransport as the transport layer, enabling MOQT in web browsers:
+
+```typescript
+const client = await MOQtailClient.new({
+  url: 'https://relay.example.com/moq',
+  supportedVersions: [0xff00000e], // Draft-14
+  enableDatagrams: true,
+  dataStreamTimeoutMs: 5000,
+  controlStreamTimeoutMs: 1500
+})
+```
+
+<Info>
+The `MOQtailClientOptions` type provides full control over protocol negotiation, timeouts, and lifecycle callbacks.
+</Info>
+
+## Protocol Architecture
+
+### Control Stream
+
+The control stream is a bidirectional QUIC stream used for protocol negotiation and coordination:
+
+```typescript
+// Control messages include:
+export enum ControlMessageType {
+  ClientSetup = 0x20,           // Initial client setup
+  ServerSetup = 0x21,           // Server setup response
+  Subscribe = 0x03,             // Request track subscription
+  SubscribeOk = 0x04,           // Subscription accepted
+  Fetch = 0x16,                 // Request historical data
+  PublishNamespace = 0x06,      // Announce namespace
+  TrackStatus = 0x0d,           // Query track status
+  // ... and more
+}
+```
+
+The control stream remains open for the duration of the session and handles all signaling between peers.
+
+### Data Delivery Modes
+
+MOQT supports two primary data delivery mechanisms:
+
+#### Subgroup Delivery
+
+Ordered, reliable delivery using unidirectional QUIC streams:
+
+```typescript
+export enum SubgroupHeaderType {
+  Type0x10 = 0x10,  // No extensions, subgroup ID = 0
+  Type0x11 = 0x11,  // With extensions, subgroup ID = 0
+  Type0x14 = 0x14,  // Explicit subgroup ID, no extensions
+  Type0x15 = 0x15,  // Explicit subgroup ID, with extensions
+  // ... additional variants
+}
+```
+
+- **Use case**: Live video streams, where frames within a GOP need reliable delivery
+- **Benefit**: Automatic retransmission of lost data within a stream
+- **Stream management**: One stream per group, closed when group completes
+
+#### Datagram Delivery
+
+Unreliable, low-latency delivery using QUIC datagrams:
+
+```typescript
+export enum ObjectDatagramType {
+  Type0x00 = 0x00,  // Basic datagram with object ID
+  Type0x01 = 0x01,  // With extension headers
+  Type0x02 = 0x02,  // End of group marker
+  Type0x03 = 0x03,  // End of group with extensions
+  // ... additional variants
+}
+```
+
+- **Use case**: Real-time audio, sensor data, low-latency video
+- **Benefit**: Minimal latency, no head-of-line blocking
+- **Trade-off**: No retransmissions for lost packets
+
+<Accordion title="When to use each delivery mode">
+  **Use Subgroup delivery when:**
+  - Content requires reliable delivery (video keyframes, critical data)
+  - Group boundaries align with natural content boundaries (GOPs)
+  - Slight latency increase is acceptable for quality
+
+  **Use Datagram delivery when:**
+  - Minimizing latency is critical
+  - Content can tolerate occasional loss (B-frames, audio)
+  - Real-time interactivity is required
+</Accordion>
+
+## Object Locations
+
+Every object in MOQT is uniquely identified by its location:
+
+```typescript
+export class Location {
+  public readonly group: bigint    // Group index (e.g., GOP, segment)
+  public readonly object: bigint   // Object within group (e.g., frame)
+
+  constructor(group: bigint | number, object: bigint | number) {
+    this.group = BigInt(group)
+    this.object = BigInt(object)
+  }
+
+  compare(other: Location): number {
+    if (this.group < other.group) return -1
+    if (this.group > other.group) return 1
+    if (this.object < other.object) return -1
+    if (this.object > other.object) return 1
+    return 0
+  }
+}
+```
+
+**Location hierarchy:**
+- **Group**: Logical grouping of related objects (e.g., a GOP in video)
+- **Object**: Individual data unit within a group (e.g., a frame)
+
+<Info>
+Locations enable precise range requests for both live subscriptions and historical fetches.
+</Info>
+
+## Object Status Codes
+
+Objects can carry status information beyond normal payload data:
+
+```typescript
+export enum ObjectStatus {
+  Normal = 0x0,          // Object exists with payload
+  DoesNotExist = 0x1,    // Requested object not available
+  EndOfGroup = 0x3,      // Marks group boundary
+  EndOfTrack = 0x4,      // Marks track termination
+}
+```
+
+Status codes enable:
+- **Gap detection**: Identify missing objects in historical data
+- **Boundary signaling**: Know when groups/tracks end
+- **Efficient caching**: Store metadata without payload
+
+## Subscription Filters
+
+Clients can request specific portions of a track using filter types:
+
+```typescript
+export enum FilterType {
+  NextGroupStart = 0x1,   // Start from beginning of next group
+  LatestObject = 0x2,     // Start from most recent object
+  AbsoluteStart = 0x3,    // Start from specific location
+  AbsoluteRange = 0x4,    // Request specific range
+}
+```
+
+Example subscription with filter:
+
+```typescript
+const result = await client.subscribe({
+  fullTrackName,
+  priority: 0,
+  groupOrder: GroupOrder.Original,
+  forward: true,
+  filterType: FilterType.LatestObject  // Jump to live edge
+})
+```
+
+## Priority System
+
+MOQT uses a dual-priority system to optimize bandwidth allocation:
+
+### Publisher Priority
+
+Publishers assign priority (0-255) to indicate content importance:
+
+```typescript
+const track: Track = {
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { live: liveStream },
+  publisherPriority: 0  // Highest priority (0 = highest, 255 = lowest)
+}
+```
+
+### Subscriber Priority
+
+Subscribers indicate their interest level:
+
+```typescript
+await client.subscribe({
+  fullTrackName,
+  priority: 32,  // Medium priority
+  groupOrder: GroupOrder.Original,
+  forward: true,
+  filterType: FilterType.LatestObject
+})
+```
+
+<Note>
+The combined priority (weighted average of publisher and subscriber priorities) determines stream prioritization in the QUIC transport layer.
+</Note>
+
+## Error Handling
+
+The protocol includes comprehensive error codes for different operations:
+
+```typescript
+// Subscribe errors
+export enum SubscribeErrorCode {
+  InternalError = 0x0,
+  Unauthorized = 0x1,
+  TrackDoesNotExist = 0x4,
+  InvalidRange = 0x5,
+  ExpiredAuthToken = 0x12,
+}
+
+// Fetch errors
+export enum FetchErrorCode {
+  InternalError = 0x0,
+  TrackDoesNotExist = 0x4,
+  InvalidRange = 0x5,
+  NoObjects = 0x6,
+  InvalidJoiningRequestId = 0x7,
+}
+```
+
+Handling subscription errors:
+
+```typescript
+const result = await client.subscribe(subscribeOptions)
+
+if (result instanceof SubscribeError) {
+  switch (result.errorCode) {
+    case SubscribeErrorCode.TrackDoesNotExist:
+      console.error('Track not found')
+      break
+    case SubscribeErrorCode.InvalidRange:
+      console.error('Invalid location range specified')
+      break
+    default:
+      console.error(`Subscription failed: ${result.reasonPhrase}`)
+  }
+}
+```
+
+## Extension Headers
+
+MOQT supports optional extension headers for metadata:
+
+- **Capture Timestamp**: Original media capture time
+- **Audio Level**: RMS audio level indicator
+- **Video Frame Marking**: Frame dependencies and structure
+- **Video Config**: Codec configuration data
+
+<Info>
+Extension headers are sent with objects when present, enabling advanced media processing and synchronization.
+</Info>
+
+## Protocol Lifecycle
+
+1. **Connection establishment**: WebTransport connection to relay
+2. **Setup handshake**: Exchange supported versions and parameters
+3. **Namespace publication**: Publishers announce available content
+4. **Track discovery**: Subscribers discover available tracks
+5. **Data exchange**: Subscribe/Fetch operations deliver content
+6. **Graceful shutdown**: GoAway messages coordinate termination
+
+<Card title="Next Steps" icon="arrow-right" href="/concepts/tracks-and-objects">
+  Learn about tracks and objects, the fundamental data structures in MOQT
+</Card>

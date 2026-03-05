@@ -1,0 +1,355 @@
+---
+title: "Clock Normalizer"
+description: "Synchronize local clock with a time server for accurate timestamps"
+---
+
+## Overview
+
+The `ClockNormalizer` class synchronizes your local system clock with an authoritative time server. This is critical for distributed MOQT applications where accurate, synchronized timestamps are needed for proper object sequencing, latency measurements, and coordinated playback.
+
+## Class Definition
+
+```typescript
+class ClockNormalizer {
+  static async create(
+    timeServerUrl?: string,
+    numberOfSamples?: number
+  ): Promise<ClockNormalizer>
+  
+  getSkew(): number
+  now(): number
+  async recalibrate(): Promise<number>
+}
+```
+
+## Static Factory Method
+
+### create
+
+Asynchronously creates and calibrates a ClockNormalizer instance.
+
+```typescript
+static async create(
+  timeServerUrl?: string,
+  numberOfSamples?: number
+): Promise<ClockNormalizer>
+```
+
+<ParamField path="timeServerUrl" type="string" default="https://time.akamai.com/?ms">
+  URL of the time server to query. The server should return the current Unix timestamp in seconds with millisecond precision.
+</ParamField>
+
+<ParamField path="numberOfSamples" type="number" default="5">
+  Number of samples to take when calculating clock skew. More samples provide better accuracy but take longer.
+</ParamField>
+
+**Returns:** `Promise<ClockNormalizer>` - A calibrated ClockNormalizer instance
+
+```typescript
+import { ClockNormalizer } from 'moqtail/util'
+
+// Use default time server (Akamai)
+const clock = await ClockNormalizer.create()
+
+// Use custom time server
+const clock = await ClockNormalizer.create('https://worldtimeapi.org/api/timezone/Etc/UTC')
+
+// Take more samples for better accuracy
+const clock = await ClockNormalizer.create(undefined, 10)
+```
+
+## Methods
+
+### getSkew
+
+Returns the calculated clock skew in milliseconds.
+
+```typescript
+getSkew(): number
+```
+
+**Returns:** Clock offset in milliseconds. Positive values mean your clock is ahead of the server, negative values mean your clock is behind.
+
+```typescript
+const skew = clock.getSkew()
+if (skew > 100) {
+  console.warn(`Clock is ${skew}ms ahead of server`)
+} else if (skew < -100) {
+  console.warn(`Clock is ${-skew}ms behind server`)
+}
+```
+
+### now
+
+Returns the current normalized timestamp in milliseconds since Unix epoch.
+
+```typescript
+now(): number
+```
+
+**Returns:** Adjusted timestamp in milliseconds
+
+```typescript
+// Regular Date.now()
+const localTime = Date.now()
+
+// Normalized time
+const normalizedTime = clock.now()
+
+// These may differ by the clock skew
+const difference = localTime - normalizedTime
+console.log(`Time difference: ${difference}ms`)
+```
+
+### recalibrate
+
+Recalibrates the clock skew by taking fresh samples from the time server.
+
+```typescript
+async recalibrate(): Promise<number>
+```
+
+**Returns:** `Promise<number>` - The new clock offset in milliseconds
+
+```typescript
+// Recalibrate periodically to account for drift
+setInterval(async () => {
+  const newSkew = await clock.recalibrate()
+  console.log(`Recalibrated. New skew: ${newSkew}ms`)
+}, 3600_000)  // Every hour
+```
+
+## Usage Examples
+
+### Basic Clock Synchronization
+
+```typescript
+import { ClockNormalizer } from 'moqtail/util'
+
+// Initialize clock normalizer
+const clock = await ClockNormalizer.create()
+
+console.log(`Clock skew: ${clock.getSkew()}ms`)
+
+// Use normalized time for timestamps
+const timestamp = clock.now()
+const object = {
+  id: 123,
+  timestamp,  // Use normalized time
+  data: payload
+}
+```
+
+### Accurate Latency Measurement
+
+```typescript
+import { ClockNormalizer } from 'moqtail/util'
+
+const clock = await ClockNormalizer.create()
+
+// Sender: Add normalized timestamp
+const sentObject = {
+  id: 456,
+  sentAt: clock.now(),
+  payload: data
+}
+
+// Receiver: Calculate latency
+subscription.onObject((object) => {
+  const receivedAt = clock.now()
+  const latency = receivedAt - object.sentAt
+  console.log(`Object latency: ${latency}ms`)
+})
+```
+
+### Synchronized Playback
+
+Coordinate playback across multiple clients:
+
+```typescript
+import { ClockNormalizer } from 'moqtail/util'
+
+const clock = await ClockNormalizer.create()
+
+// Publisher: Schedule content with normalized timestamps
+const scheduledContent = {
+  id: 789,
+  playAt: clock.now() + 5000,  // Play 5 seconds from now
+  content: video
+}
+
+// Subscribers: Play at the scheduled time
+subscription.onObject((object) => {
+  const delay = object.playAt - clock.now()
+  
+  if (delay > 0) {
+    setTimeout(() => {
+      playVideo(object.content)
+    }, delay)
+  } else {
+    // We're late, play immediately
+    playVideo(object.content)
+  }
+})
+```
+
+### Multi-Server Synchronization
+
+Measure time differences across different servers:
+
+```typescript
+import { ClockNormalizer } from 'moqtail/util'
+
+const clocks = {
+  us: await ClockNormalizer.create('https://time-us.example.com'),
+  eu: await ClockNormalizer.create('https://time-eu.example.com'),
+  asia: await ClockNormalizer.create('https://time-asia.example.com')
+}
+
+console.log('Regional clock skews:')
+console.log(`US: ${clocks.us.getSkew()}ms`)
+console.log(`EU: ${clocks.eu.getSkew()}ms`)
+console.log(`Asia: ${clocks.asia.getSkew()}ms`)
+
+// Choose the clock with lowest skew
+const bestClock = Object.entries(clocks)
+  .sort((a, b) => Math.abs(a[1].getSkew()) - Math.abs(b[1].getSkew()))[0][1]
+
+console.log(`Using clock with ${Math.abs(bestClock.getSkew())}ms skew`)
+```
+
+### Periodic Recalibration
+
+```typescript
+import { ClockNormalizer } from 'moqtail/util'
+
+class ManagedClock {
+  private clock: ClockNormalizer | null = null
+  private recalibrationInterval: NodeJS.Timeout | null = null
+  
+  async initialize() {
+    this.clock = await ClockNormalizer.create()
+    
+    // Recalibrate every 30 minutes
+    this.recalibrationInterval = setInterval(async () => {
+      try {
+        const oldSkew = this.clock!.getSkew()
+        const newSkew = await this.clock!.recalibrate()
+        const drift = Math.abs(newSkew - oldSkew)
+        
+        if (drift > 50) {
+          console.warn(`Significant clock drift detected: ${drift}ms`)
+        }
+        
+        console.log(`Clock recalibrated. Skew: ${newSkew}ms`)
+      } catch (error) {
+        console.error('Failed to recalibrate clock:', error)
+      }
+    }, 1800_000)  // 30 minutes
+  }
+  
+  now(): number {
+    return this.clock?.now() ?? Date.now()
+  }
+  
+  shutdown() {
+    if (this.recalibrationInterval) {
+      clearInterval(this.recalibrationInterval)
+    }
+  }
+}
+
+const managedClock = new ManagedClock()
+await managedClock.initialize()
+```
+
+## Time Server Requirements
+
+The time server should:
+1. Return the current Unix timestamp in seconds
+2. Support CORS for browser-based applications
+3. Provide millisecond precision (e.g., `1678901234.567`)
+4. Respond quickly (< 100ms) for accurate RTT measurement
+
+### Example Time Server Response
+
+```http
+GET https://time.akamai.com/?ms HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Type: text/plain
+
+1678901234.567
+```
+
+## Accuracy Considerations
+
+<Note>
+  **Network Latency:** The accuracy of clock synchronization depends on network latency. More samples and lower RTT improve accuracy.
+</Note>
+
+<Tip>
+  **Sample Count:** Use 5-10 samples for most applications. More samples improve accuracy but increase initialization time.
+</Tip>
+
+<Warning>
+  **Asymmetric Routes:** Clock synchronization assumes symmetric network routes. If upload and download paths have significantly different latencies, accuracy may be reduced.
+</Warning>
+
+## Algorithm Details
+
+The ClockNormalizer uses a simplified version of NTP (Network Time Protocol):
+
+1. **Sample Collection:** Takes multiple round-trip measurements to the time server
+2. **RTT Calculation:** Measures request-response round-trip time
+3. **One-Way Delay:** Estimates one-way delay as RTT / 2
+4. **Offset Calculation:** Computes local clock offset relative to server time
+5. **Averaging:** Averages offsets from all samples to reduce noise
+
+```typescript
+// Simplified algorithm
+offset = localTimeAtServer - serverTimeMs
+localTimeAtServer = avgLocalTime - (rtt / 2)
+```
+
+## Error Handling
+
+```typescript
+import { ClockNormalizer } from 'moqtail/util'
+
+try {
+  const clock = await ClockNormalizer.create('https://my-time-server.com')
+  console.log('Clock synchronized')
+} catch (error) {
+  console.error('Failed to synchronize clock:', error)
+  // Fallback to local clock
+  const fallbackClock = {
+    now: () => Date.now(),
+    getSkew: () => 0
+  }
+}
+```
+
+## Best Practices
+
+<Tip>
+  **Initialize Early:** Create the ClockNormalizer during application startup, before any time-sensitive operations.
+</Tip>
+
+<Tip>
+  **Recalibrate Periodically:** System clocks drift over time. Recalibrate every 30-60 minutes for long-running applications.
+</Tip>
+
+<Warning>
+  **Don't Synchronize Too Often:** Excessive synchronization requests can be rate-limited by time servers. Once per hour is usually sufficient.
+</Warning>
+
+<Note>
+  **Fallback to Local Time:** If clock synchronization fails, fall back to `Date.now()` rather than blocking application startup.
+</Note>
+
+## Related Topics
+
+- [Telemetry](/api/telemetry) - Monitor network performance
+- [Playout Buffer](/api/playout-buffer) - Timing-based buffer management
+- [Subscribe](/api/subscribe) - Timestamp-based object delivery

@@ -1,0 +1,476 @@
+---
+title: 'Static Content'
+description: 'Serve pre-recorded or cached content using object caches for on-demand delivery'
+---
+
+## Overview
+
+Static content in Moqtail allows you to serve pre-recorded or cached media that subscribers can fetch on-demand. Unlike live streaming, static content is stored in an `ObjectCache` that supports random access and range queries.
+
+<Note>
+Static tracks are ideal for video-on-demand (VOD), file transfers, or any content that needs to be accessed non-sequentially.
+</Note>
+
+## Object Caches
+
+Moqtail provides two cache implementations:
+
+### MemoryObjectCache
+
+Unlimited in-memory storage with binary search indexing:
+
+```typescript
+import { MemoryObjectCache, MoqtObject } from 'moqtail-ts'
+
+const cache = new MemoryObjectCache()
+
+// Add objects (maintains sorted order)
+cache.add(object1)
+cache.add(object2)
+
+// Retrieve by location
+const obj = cache.getByLocation(new Location(5n, 10n))
+
+// Get range of objects
+const objects = cache.getRange(
+  new Location(0n, 0n),  // start (inclusive)
+  new Location(10n, 0n)  // end (exclusive)
+)
+
+// Check size
+console.log(`Cache contains ${cache.size()} objects`)
+
+// Clear all
+cache.clear()
+```
+
+### RingBufferObjectCache
+
+Fixed-size cache with automatic eviction of oldest objects:
+
+```typescript
+import { RingBufferObjectCache } from 'moqtail-ts'
+
+// Create cache with max 1000 objects
+const cache = new RingBufferObjectCache(1000)
+
+// Add objects - oldest are automatically evicted
+for (let i = 0; i < 1500; i++) {
+  cache.add(createObject(i))
+}
+
+console.log(`Cache size: ${cache.size()}`) // 1000 (oldest 500 evicted)
+```
+
+<Warning>
+`RingBufferObjectCache` evicts the oldest objects when capacity is reached. Use for scenarios where you only need recent history.
+</Warning>
+
+## Cache Interface
+
+Both implementations follow the `ObjectCache` interface:
+
+```typescript
+interface ObjectCache {
+  add(obj: MoqtObject): void
+  getRange(start?: Location, end?: Location): MoqtObject[]
+  getByLocation(location: Location): MoqtObject | undefined
+  size(): number
+  clear(): void
+}
+```
+
+<Steps>
+
+<Step title="Add Objects">
+Insert objects while maintaining sorted order by location:
+
+```typescript
+cache.add(object)
+```
+</Step>
+
+<Step title="Range Queries">
+Retrieve objects within a range (end is exclusive):
+
+```typescript
+// All objects
+const all = cache.getRange()
+
+// From start location onward
+const fromStart = cache.getRange(new Location(5n, 0n))
+
+// Up to end location
+const toEnd = cache.getRange(undefined, new Location(10n, 0n))
+
+// Specific range
+const range = cache.getRange(
+  new Location(5n, 0n),
+  new Location(10n, 0n)
+)
+```
+</Step>
+
+<Step title="Exact Lookup">
+Find a specific object by location:
+
+```typescript
+const obj = cache.getByLocation(new Location(7n, 3n))
+if (obj) {
+  console.log('Found:', obj)
+} else {
+  console.log('Object not in cache')
+}
+```
+</Step>
+
+</Steps>
+
+## Creating a Static Track
+
+Use `StaticTrackSource` to serve cached content:
+
+```typescript
+import {
+  StaticTrackSource,
+  MemoryObjectCache,
+  Track,
+  FullTrackName,
+  ObjectForwardingPreference
+} from 'moqtail-ts'
+
+// 1. Create and populate cache
+const cache = new MemoryObjectCache()
+
+for (const chunk of fileChunks) {
+  const object = MoqtObject.newWithPayload(
+    fullTrackName,
+    new Location(chunk.groupId, chunk.objectId),
+    64, // Medium priority
+    ObjectForwardingPreference.Subgroup,
+    null,
+    null,
+    chunk.data
+  )
+  cache.add(object)
+}
+
+// 2. Create static source
+const staticSource = new StaticTrackSource(cache)
+
+// 3. Create track
+const track: Track = {
+  fullTrackName: FullTrackName.tryNew('files/documents', 'presentation.pdf'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: {
+    past: staticSource
+  },
+  publisherPriority: 64
+}
+
+// 4. Register and publish
+client.addOrUpdateTrack(track)
+await client.publishNamespace(['files', 'documents'])
+```
+
+## Video-on-Demand Example
+
+Here's a complete VOD implementation:
+
+```typescript
+import {
+  MOQtailClient,
+  MemoryObjectCache,
+  StaticTrackSource,
+  MoqtObject,
+  Location,
+  FullTrackName,
+  ObjectForwardingPreference,
+  Track
+} from 'moqtail-ts'
+
+async function publishVideoOnDemand(
+  videoFile: ArrayBuffer,
+  metadata: VideoMetadata
+) {
+  const fullTrackName = FullTrackName.tryNew(
+    'vod/movies',
+    metadata.title
+  )
+  
+  // 1. Parse and cache video segments
+  const cache = new MemoryObjectCache()
+  const segments = parseMP4Segments(videoFile)
+  
+  for (const segment of segments) {
+    const groupId = segment.gopNumber
+    
+    for (const frame of segment.frames) {
+      const object = MoqtObject.newWithPayload(
+        fullTrackName,
+        new Location(groupId, frame.index),
+        frame.isKeyframe ? 0 : 8,
+        ObjectForwardingPreference.Subgroup,
+        null,
+        null,
+        frame.data
+      )
+      
+      cache.add(object)
+    }
+    
+    // Add end-of-group marker
+    const endOfGroup = MoqtObject.newWithStatus(
+      fullTrackName,
+      new Location(groupId, segment.frames.length),
+      0,
+      ObjectForwardingPreference.Subgroup,
+      null,
+      null,
+      ObjectStatus.EndOfGroup
+    )
+    cache.add(endOfGroup)
+  }
+  
+  // 2. Add end-of-track marker
+  const lastSegment = segments[segments.length - 1]
+  const endOfTrack = MoqtObject.newWithStatus(
+    fullTrackName,
+    new Location(lastSegment.gopNumber + 1n, 0n),
+    0,
+    ObjectForwardingPreference.Subgroup,
+    null,
+    null,
+    ObjectStatus.EndOfTrack
+  )
+  cache.add(endOfTrack)
+  
+  console.log(`Cached ${cache.size()} objects for ${metadata.title}`)
+  
+  // 3. Create track
+  const track: Track = {
+    fullTrackName,
+    forwardingPreference: ObjectForwardingPreference.Subgroup,
+    trackSource: {
+      past: new StaticTrackSource(cache)
+    },
+    publisherPriority: 32
+  }
+  
+  // 4. Publish
+  const client = await MOQtailClient.new({
+    url: 'https://relay.example.com',
+    supportedVersions: [0xff00000b]
+  })
+  
+  client.addOrUpdateTrack(track)
+  await client.publishNamespace(['vod', 'movies'])
+  
+  return { client, track, cache }
+}
+
+interface VideoMetadata {
+  title: string
+  duration: number
+  gopDuration: number
+}
+```
+
+## File Transfer Example
+
+Transfer large files efficiently:
+
+```typescript
+import {
+  MemoryObjectCache,
+  StaticTrackSource,
+  MoqtObject,
+  Location,
+  FullTrackName,
+  ObjectForwardingPreference
+} from 'moqtail-ts'
+
+async function publishFile(
+  filePath: string,
+  fileData: Uint8Array
+) {
+  const CHUNK_SIZE = 64 * 1024 // 64 KB chunks
+  const fullTrackName = FullTrackName.tryNew(
+    'files/transfers',
+    filePath
+  )
+  
+  const cache = new MemoryObjectCache()
+  const groupId = 0n // Single group for entire file
+  
+  // Split file into chunks
+  for (let offset = 0; offset < fileData.length; offset += CHUNK_SIZE) {
+    const end = Math.min(offset + CHUNK_SIZE, fileData.length)
+    const chunk = fileData.slice(offset, end)
+    const objectId = BigInt(offset / CHUNK_SIZE)
+    
+    const object = MoqtObject.newWithPayload(
+      fullTrackName,
+      new Location(groupId, objectId),
+      128, // Low priority
+      ObjectForwardingPreference.Subgroup,
+      null,
+      null,
+      chunk
+    )
+    
+    cache.add(object)
+  }
+  
+  // Add end markers
+  const totalChunks = Math.ceil(fileData.length / CHUNK_SIZE)
+  const endOfGroup = MoqtObject.newWithStatus(
+    fullTrackName,
+    new Location(groupId, BigInt(totalChunks)),
+    0,
+    ObjectForwardingPreference.Subgroup,
+    null,
+    null,
+    ObjectStatus.EndOfGroup
+  )
+  cache.add(endOfGroup)
+  
+  const endOfTrack = MoqtObject.newWithStatus(
+    fullTrackName,
+    new Location(groupId + 1n, 0n),
+    0,
+    ObjectForwardingPreference.Subgroup,
+    null,
+    null,
+    ObjectStatus.EndOfTrack
+  )
+  cache.add(endOfTrack)
+  
+  const track: Track = {
+    fullTrackName,
+    forwardingPreference: ObjectForwardingPreference.Subgroup,
+    trackSource: {
+      past: new StaticTrackSource(cache)
+    },
+    publisherPriority: 128
+  }
+  
+  return track
+}
+```
+
+## Updating Static Content
+
+You can update cached content dynamically:
+
+```typescript
+// Add new objects to existing cache
+const newObject = MoqtObject.newWithPayload(
+  fullTrackName,
+  new Location(100n, 0n),
+  64,
+  ObjectForwardingPreference.Subgroup,
+  null,
+  null,
+  newData
+)
+
+cache.add(newObject)
+
+// No need to re-register track - cache is referenced by the track source
+```
+
+<Note>
+The cache is live-referenced by the track. Adding objects makes them immediately available to new fetch requests.
+</Note>
+
+## PastObjectSource Interface
+
+The `StaticTrackSource` implements `PastObjectSource`:
+
+```typescript
+interface PastObjectSource {
+  readonly cache: ObjectCache
+  getRange(start?: Location, end?: Location): Promise<MoqtObject[]>
+}
+```
+
+You can implement custom static sources:
+
+```typescript
+class DatabaseObjectSource implements PastObjectSource {
+  constructor(
+    readonly cache: ObjectCache,
+    private readonly db: Database
+  ) {}
+  
+  async getRange(start?: Location, end?: Location): Promise<MoqtObject[]> {
+    // Fetch from database instead of memory
+    const rows = await this.db.query(
+      'SELECT * FROM objects WHERE group >= ? AND group < ?',
+      [start?.group ?? 0, end?.group ?? Number.MAX_SAFE_INTEGER]
+    )
+    
+    return rows.map(row => deserializeObject(row))
+  }
+}
+```
+
+## Best Practices
+
+<Card title="Cache Selection" icon="memory">
+- Use `MemoryObjectCache` for complete content (VOD, files)
+- Use `RingBufferObjectCache` for sliding windows (recent history)
+- Implement custom sources for database-backed content
+</Card>
+
+<Card title="Object Ordering" icon="sort">
+Always add objects in ascending location order for optimal cache performance:
+
+```typescript
+// Good: sequential addition
+for (let i = 0; i < 100; i++) {
+  cache.add(createObject(i))
+}
+
+// Avoid: random order (causes more shifts)
+for (const id of shuffledIds) {
+  cache.add(createObject(id))
+}
+```
+</Card>
+
+<Card title="End Markers" icon="flag-checkered">
+Always include end-of-group and end-of-track markers:
+
+```typescript
+// After last object in group
+cache.add(endOfGroupMarker)
+
+// After all groups
+cache.add(endOfTrackMarker)
+```
+</Card>
+
+<Card title="Memory Management" icon="gauge-high">
+```typescript
+// Monitor cache size
+if (cache.size() > MAX_OBJECTS) {
+  console.warn(`Cache too large: ${cache.size()} objects`)
+}
+
+// Use ring buffer for bounded memory
+const boundedCache = new RingBufferObjectCache(10000)
+```
+</Card>
+
+## Next Steps
+
+<CardGroup cols={2}>
+<Card title="Hybrid Content" icon="arrows-split-up-and-left" href="/publisher/hybrid-content">
+Combine static and live delivery
+</Card>
+<Card title="Live Streaming" icon="tower-broadcast" href="/publisher/live-streaming">
+Learn about real-time content delivery
+</Card>
+</CardGroup>

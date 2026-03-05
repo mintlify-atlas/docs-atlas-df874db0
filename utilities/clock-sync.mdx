@@ -1,0 +1,625 @@
+---
+title: 'Clock Synchronization'
+description: 'Network time synchronization utility for aligning local clocks with time servers'
+---
+
+## Overview
+
+The `ClockNormalizer` class provides clock synchronization with network time servers, enabling precise time alignment across distributed systems. It calculates and compensates for clock skew between local time and server time, accounting for round-trip network latency.
+
+<CardGroup cols={2}>
+  <Card title="Clock Skew Calculation" icon="clock">
+    Measure offset between local and network time
+  </Card>
+  <Card title="RTT Compensation" icon="gauge">
+    Account for network round-trip delays
+  </Card>
+</CardGroup>
+
+## Why Clock Synchronization?
+
+Clock synchronization is essential for:
+
+- **Multi-source media synchronization** - Align audio and video from different publishers
+- **Timestamp accuracy** - Ensure consistent timing across distributed systems
+- **Latency measurements** - Calculate end-to-end delays accurately
+- **Content scheduling** - Coordinate timed events across the network
+
+## Installation
+
+```typescript
+import { ClockNormalizer } from '@moqtail/moqtail-ts'
+```
+
+## Basic Usage
+
+### Creating a ClockNormalizer
+
+```typescript
+// Create with default time server (Akamai) and 5 samples
+const clockNormalizer = await ClockNormalizer.create()
+
+// Create with custom time server
+const customNormalizer = await ClockNormalizer.create(
+  'https://time.cloudflare.com/api/v1/time',
+  5 // number of samples
+)
+
+// Create with different sample count for more accuracy
+const accurateNormalizer = await ClockNormalizer.create(
+  'https://time.akamai.com/?ms',
+  10 // more samples = more accurate
+)
+```
+
+<Note>
+  The `create` method is asynchronous as it performs network requests to calculate the initial clock offset. Use `await` or `.then()` to wait for initialization.
+</Note>
+
+### Getting Synchronized Time
+
+```typescript
+// Get current network-synchronized time
+const networkTime = clockNormalizer.now()
+console.log(`Network time: ${networkTime} ms`)
+
+// Compare with local time
+const localTime = Date.now()
+const skew = clockNormalizer.getSkew()
+console.log(`Local time: ${localTime} ms`)
+console.log(`Clock skew: ${skew} ms`)
+console.log(`Network time: ${networkTime} ms`)
+```
+
+### Getting Clock Skew
+
+```typescript
+// Get the calculated offset
+const offset = clockNormalizer.getSkew()
+
+if (offset > 0) {
+  console.log(`Local clock is ${offset} ms ahead of network time`)
+} else if (offset < 0) {
+  console.log(`Local clock is ${Math.abs(offset)} ms behind network time`)
+} else {
+  console.log('Clocks are synchronized')
+}
+```
+
+### Recalibrating
+
+Recalibrate periodically to account for clock drift:
+
+```typescript
+// Recalibrate every hour
+setInterval(async () => {
+  const newOffset = await clockNormalizer.recalibrate()
+  console.log(`Recalibrated. New offset: ${newOffset} ms`)
+}, 60 * 60 * 1000) // 1 hour
+```
+
+## Implementation Details
+
+### Time Server Protocol
+
+The ClockNormalizer supports time servers that return Unix timestamp in seconds:
+
+```typescript
+const DEFAULT_TIME_SERVER = 'https://time.akamai.com/?ms'
+const DEFAULT_SAMPLE_SIZE = 5
+```
+
+### Skew Calculation Algorithm
+
+```typescript
+private static async calculateSkew(timeServerUrl: string, numSamples: number): Promise<number> {
+  const samples: Array<{ offset: number; rtt: number }> = []
+
+  for (let i = 0; i < numSamples; i++) {
+    const sample = await ClockNormalizer.takeSingleSample(timeServerUrl)
+    if (sample !== null) {
+      samples.push(sample)
+    }
+
+    // Small delay between samples to avoid overwhelming the server
+    if (i < numSamples - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
+
+  if (samples.length === 0) {
+    throw new Error('Failed to get any valid samples')
+  }
+
+  const offsets = samples.map((s) => s.offset)
+  const average = offsets.reduce((sum, offset) => sum + offset, 0) / offsets.length
+
+  return Math.round(average)
+}
+```
+
+### Single Sample Collection
+
+```typescript
+private static async takeSingleSample(timeServerUrl: string): Promise<{ offset: number; rtt: number } | null> {
+  const separator = timeServerUrl.includes('?') ? '&' : '?'
+  const url = `${timeServerUrl}${separator}_=${Date.now()}`
+
+  const t0 = performance.now()
+  const localTimeBeforeRequest = Date.now()
+  const response = await fetch(url, { cache: 'no-store' })
+  const serverTimeText = await response.text()
+  const t1 = performance.now()
+  const localTimeAfterRequest = Date.now()
+
+  const serverTime = parseFloat(serverTimeText)
+  if (isNaN(serverTime)) {
+    return null
+  }
+
+  // Convert server time from seconds to milliseconds
+  const serverTimeMs = serverTime * 1000
+
+  const rtt = t1 - t0
+  const oneWayDelay = rtt / 2
+
+  const avgLocalTime = (localTimeBeforeRequest + localTimeAfterRequest) / 2
+  const localTimeAtServer = avgLocalTime - oneWayDelay
+
+  const offset = localTimeAtServer - serverTimeMs
+
+  return { offset, rtt }
+}
+```
+
+### Key Features
+
+<AccordionGroup>
+  <Accordion title="Multiple sample averaging">
+    Takes multiple samples and averages them to reduce the impact of network jitter and transient delays.
+  </Accordion>
+
+  <Accordion title="RTT compensation">
+    Accounts for round-trip time by estimating one-way delay (RTT / 2) and adjusting the local timestamp accordingly.
+  </Accordion>
+
+  <Accordion title="Cache busting">
+    Adds a timestamp query parameter to prevent HTTP caching from returning stale time values.
+  </Accordion>
+
+  <Accordion title="Graceful error handling">
+    Returns null for failed samples and continues with successful ones. Throws only if all samples fail.
+  </Accordion>
+</AccordionGroup>
+
+## Media Synchronization
+
+Synchronize multiple media streams using network time:
+
+```typescript
+class MediaSynchronizer {
+  private clockNormalizer: ClockNormalizer
+  private audioStream: MediaStream
+  private videoStream: MediaStream
+
+  async initialize() {
+    // Initialize clock synchronization
+    this.clockNormalizer = await ClockNormalizer.create()
+    console.log(`Clock offset: ${this.clockNormalizer.getSkew()} ms`)
+  }
+
+  publishWithTimestamp(object: MoqtObject) {
+    // Use network time for timestamps
+    const networkTimestamp = this.clockNormalizer.now()
+    
+    const timestampedObject = {
+      ...object,
+      timestamp: networkTimestamp,
+    }
+
+    return timestampedObject
+  }
+
+  async synchronizedPlayback(
+    audioObjects: MoqtObject[],
+    videoObjects: MoqtObject[]
+  ) {
+    const currentNetworkTime = this.clockNormalizer.now()
+
+    // Find audio and video objects that should play at the same time
+    const audioToPlay = audioObjects.find(
+      obj => Math.abs(obj.timestamp - currentNetworkTime) < 20 // 20ms tolerance
+    )
+
+    const videoToPlay = videoObjects.find(
+      obj => Math.abs(obj.timestamp - currentNetworkTime) < 20
+    )
+
+    // Play synchronized frames
+    if (audioToPlay) this.playAudio(audioToPlay)
+    if (videoToPlay) this.playVideo(videoToPlay)
+  }
+
+  private playAudio(object: MoqtObject) {
+    // Decode and play audio
+  }
+
+  private playVideo(object: MoqtObject) {
+    // Decode and render video
+  }
+}
+
+// Usage
+const synchronizer = new MediaSynchronizer()
+await synchronizer.initialize()
+
+// Publish with synchronized timestamps
+const audioObject = synchronizer.publishWithTimestamp(audioFrame)
+const videoObject = synchronizer.publishWithTimestamp(videoFrame)
+
+// Play back in sync
+await synchronizer.synchronizedPlayback(audioObjects, videoObjects)
+```
+
+## Distributed Event Coordination
+
+Coordinate timed events across multiple clients:
+
+```typescript
+class DistributedEventScheduler {
+  private clockNormalizer: ClockNormalizer
+  private events: Map<number, () => void> = new Map()
+
+  async initialize() {
+    this.clockNormalizer = await ClockNormalizer.create()
+    this.startEventLoop()
+  }
+
+  scheduleEvent(networkTime: number, callback: () => void) {
+    // Schedule using network time, not local time
+    this.events.set(networkTime, callback)
+  }
+
+  private startEventLoop() {
+    setInterval(() => {
+      const currentNetworkTime = this.clockNormalizer.now()
+
+      // Execute events that are due
+      for (const [eventTime, callback] of this.events.entries()) {
+        if (currentNetworkTime >= eventTime) {
+          callback()
+          this.events.delete(eventTime)
+        }
+      }
+    }, 10) // Check every 10ms for precision
+  }
+
+  // Schedule an event at a specific wall-clock time across all clients
+  async scheduleGlobalEvent(wallClockTime: Date, callback: () => void) {
+    const targetNetworkTime = wallClockTime.getTime()
+    this.scheduleEvent(targetNetworkTime, callback)
+    
+    const localTime = Date.now()
+    const networkTime = this.clockNormalizer.now()
+    const timeUntilEvent = targetNetworkTime - networkTime
+    
+    console.log(`Event scheduled for ${wallClockTime.toISOString()}`)
+    console.log(`Time until event: ${timeUntilEvent} ms`)
+  }
+}
+
+// Usage across multiple clients
+const scheduler = new DistributedEventScheduler()
+await scheduler.initialize()
+
+// Schedule a synchronized event at exactly 3:00:00 PM across all clients
+const eventTime = new Date('2026-03-05T15:00:00Z')
+await scheduler.scheduleGlobalEvent(eventTime, () => {
+  console.log('Synchronized event triggered!')
+  startSimultaneousBroadcast()
+})
+```
+
+## Latency Measurement
+
+Measure end-to-end latency accurately:
+
+```typescript
+class LatencyMeasurement {
+  private publisherClock: ClockNormalizer
+  private subscriberClock: ClockNormalizer
+
+  async initialize() {
+    // Both publisher and subscriber sync with the same time server
+    const timeServer = 'https://time.akamai.com/?ms'
+    this.publisherClock = await ClockNormalizer.create(timeServer, 5)
+    this.subscriberClock = await ClockNormalizer.create(timeServer, 5)
+  }
+
+  // Publisher: Timestamp objects with network time
+  publishObject(object: MoqtObject): MoqtObject {
+    const publishTime = this.publisherClock.now()
+    
+    return {
+      ...object,
+      publishTimestamp: publishTime,
+    }
+  }
+
+  // Subscriber: Calculate end-to-end latency
+  measureLatency(object: MoqtObject): number {
+    const receiveTime = this.subscriberClock.now()
+    const publishTime = object.publishTimestamp
+
+    if (!publishTime) {
+      throw new Error('Object missing publish timestamp')
+    }
+
+    const endToEndLatency = receiveTime - publishTime
+    return endToEndLatency
+  }
+
+  // Calculate statistics over multiple objects
+  analyzeLatency(objects: MoqtObject[]) {
+    const latencies = objects.map(obj => this.measureLatency(obj))
+
+    const avg = latencies.reduce((a, b) => a + b, 0) / latencies.length
+    const min = Math.min(...latencies)
+    const max = Math.max(...latencies)
+
+    latencies.sort((a, b) => a - b)
+    const p50 = latencies[Math.floor(latencies.length * 0.5)]
+    const p95 = latencies[Math.floor(latencies.length * 0.95)]
+    const p99 = latencies[Math.floor(latencies.length * 0.99)]
+
+    return {
+      avg: avg.toFixed(2),
+      min: min.toFixed(2),
+      max: max.toFixed(2),
+      p50: p50.toFixed(2),
+      p95: p95.toFixed(2),
+      p99: p99.toFixed(2),
+    }
+  }
+}
+
+// Usage
+const measurement = new LatencyMeasurement()
+await measurement.initialize()
+
+// Publisher side
+const publishedObject = measurement.publishObject(videoFrame)
+
+// Subscriber side (after receiving object)
+const latency = measurement.measureLatency(publishedObject)
+console.log(`End-to-end latency: ${latency} ms`)
+
+// Analyze batch of objects
+const stats = measurement.analyzeLatency(receivedObjects)
+console.log('Latency statistics:', stats)
+```
+
+## Periodic Recalibration
+
+Maintain accurate synchronization over long periods:
+
+```typescript
+class ManagedClockNormalizer {
+  private clockNormalizer: ClockNormalizer | null = null
+  private recalibrationInterval: number
+  private intervalId: NodeJS.Timeout | null = null
+  private skewHistory: number[] = []
+
+  constructor(recalibrationIntervalMs = 3600000) { // Default: 1 hour
+    this.recalibrationInterval = recalibrationIntervalMs
+  }
+
+  async start() {
+    // Initial calibration
+    this.clockNormalizer = await ClockNormalizer.create()
+    const initialSkew = this.clockNormalizer.getSkew()
+    this.skewHistory.push(initialSkew)
+    
+    console.log(`Clock initialized. Initial skew: ${initialSkew} ms`)
+
+    // Schedule periodic recalibration
+    this.intervalId = setInterval(async () => {
+      await this.recalibrateAndLog()
+    }, this.recalibrationInterval)
+  }
+
+  stop() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId)
+      this.intervalId = null
+    }
+  }
+
+  private async recalibrateAndLog() {
+    if (!this.clockNormalizer) return
+
+    const oldSkew = this.clockNormalizer.getSkew()
+    const newSkew = await this.clockNormalizer.recalibrate()
+    const drift = newSkew - oldSkew
+
+    this.skewHistory.push(newSkew)
+
+    console.log(`Clock recalibrated:`,
+      `Old skew: ${oldSkew} ms,`,
+      `New skew: ${newSkew} ms,`,
+      `Drift: ${drift} ms`
+    )
+
+    // Alert if drift is significant
+    if (Math.abs(drift) > 100) {
+      console.warn(`⚠️  Significant clock drift detected: ${drift} ms`)
+    }
+  }
+
+  now(): number {
+    if (!this.clockNormalizer) {
+      throw new Error('ClockNormalizer not initialized')
+    }
+    return this.clockNormalizer.now()
+  }
+
+  getSkewHistory(): number[] {
+    return [...this.skewHistory]
+  }
+
+  getStats() {
+    if (this.skewHistory.length === 0) {
+      return { avg: 0, min: 0, max: 0, latest: 0 }
+    }
+
+    const avg = this.skewHistory.reduce((a, b) => a + b, 0) / this.skewHistory.length
+    const min = Math.min(...this.skewHistory)
+    const max = Math.max(...this.skewHistory)
+    const latest = this.skewHistory[this.skewHistory.length - 1]
+
+    return {
+      avg: avg.toFixed(2),
+      min: min.toFixed(2),
+      max: max.toFixed(2),
+      latest: latest.toFixed(2),
+      samples: this.skewHistory.length,
+    }
+  }
+}
+
+// Usage
+const managedClock = new ManagedClockNormalizer(60 * 60 * 1000) // Recalibrate every hour
+await managedClock.start()
+
+// Use throughout application lifetime
+const networkTime = managedClock.now()
+
+// Get statistics after some time
+setTimeout(() => {
+  console.log('Clock skew statistics:', managedClock.getStats())
+}, 24 * 60 * 60 * 1000) // After 24 hours
+
+// Cleanup when done
+process.on('SIGTERM', () => {
+  managedClock.stop()
+})
+```
+
+## API Reference
+
+### Static Methods
+
+<ParamField path="create" type="(timeServerUrl?: string, numberOfSamples?: number) => Promise<ClockNormalizer>">
+  Creates a new ClockNormalizer instance with calculated clock offset.
+
+  **Parameters:**
+  - `timeServerUrl` (optional): URL of time server. Default: `'https://time.akamai.com/?ms'`
+  - `numberOfSamples` (optional): Number of samples to average. Default: `5`
+
+  **Returns:** Promise that resolves to initialized ClockNormalizer
+
+  **Throws:** Error if all samples fail
+</ParamField>
+
+### Instance Methods
+
+<ParamField path="now" type="() => number">
+  Returns the current network-synchronized time in milliseconds since Unix epoch.
+
+  Equivalent to `Date.now() - offset`
+</ParamField>
+
+<ParamField path="getSkew" type="() => number">
+  Returns the calculated clock offset in milliseconds.
+
+  - Positive values: Local clock is ahead of network time
+  - Negative values: Local clock is behind network time
+  - Zero: Clocks are synchronized
+</ParamField>
+
+<ParamField path="recalibrate" type="() => Promise<number>">
+  Recalculates the clock offset with fresh samples from the time server.
+
+  **Returns:** Promise that resolves to the new offset value
+</ParamField>
+
+## Time Server Requirements
+
+The ClockNormalizer expects time servers to:
+
+1. Return plain text response with Unix timestamp
+2. Support timestamps in seconds (converted to milliseconds internally)
+3. Allow cache-busting query parameters
+4. Provide sub-second precision (e.g., `1234567890.123`)
+
+### Compatible Time Servers
+
+```typescript
+// Akamai (default)
+const akamai = 'https://time.akamai.com/?ms'
+
+// Cloudflare (requires parsing JSON response - not directly compatible)
+// Custom wrapper needed for JSON-based time APIs
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use adequate sample size">
+    Default of 5 samples is usually sufficient. Increase to 10-15 for higher accuracy in unstable networks.
+  </Accordion>
+
+  <Accordion title="Recalibrate periodically">
+    Clocks drift over time. Recalibrate every 1-6 hours depending on required precision.
+  </Accordion>
+
+  <Accordion title="Handle initialization errors">
+    Wrap `create()` in try-catch to handle network failures gracefully.
+  </Accordion>
+
+  <Accordion title="Use same time server for all peers">
+    When synchronizing multiple clients, use the same time server for consistency.
+  </Accordion>
+
+  <Accordion title="Consider network conditions">
+    High latency or jitter reduces accuracy. Take more samples in poor network conditions.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="High clock offset values">
+    If offset is consistently > 1000ms, check:
+    - Local system clock settings
+    - Time zone configuration
+    - NTP daemon status on the system
+  </Accordion>
+
+  <Accordion title="Initialization fails">
+    If `create()` throws an error:
+    - Verify network connectivity
+    - Check time server URL is accessible
+    - Ensure no firewall blocking HTTPS requests
+    - Try alternative time server
+  </Accordion>
+
+  <Accordion title="Inconsistent results">
+    If offset varies significantly:
+    - Increase number of samples
+    - Check for network jitter or congestion
+    - Add delay between samples
+    - Use more stable time server
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Network Telemetry" href="/utilities/network-telemetry">
+    Monitor network performance metrics
+  </Card>
+  <Card title="Object Cache" href="/utilities/object-cache">
+    Cache management for MoqtObject instances
+  </Card>
+</CardGroup>

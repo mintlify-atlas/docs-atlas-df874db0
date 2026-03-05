@@ -1,0 +1,545 @@
+---
+title: 'Publisher-Subscriber Model'
+description: 'Understanding the publisher-subscriber architecture in MOQT'
+---
+
+## Overview
+
+MOQT uses a publisher-subscriber model where:
+- **Publishers** create and distribute content through tracks
+- **Subscribers** discover and consume content via subscriptions and fetches
+- **Relays** (optional) forward content between publishers and subscribers
+
+<Info>
+The MOQtail client can act as both a publisher and subscriber simultaneously, enabling relay and forwarding scenarios.
+</Info>
+
+## Publisher Role
+
+Publishers create content and make it available to subscribers.
+
+### Creating a Publisher
+
+```typescript
+import { MOQtailClient, Track, FullTrackName, ObjectForwardingPreference } from '@moqtail/moqtail-ts'
+
+// Initialize client
+const publisher = await MOQtailClient.new({
+  url: 'https://relay.example.com/moq',
+  supportedVersions: [0xff00000e]
+})
+
+// Create track with live content
+const videoTrack: Track = {
+  fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { live: videoStream },
+  publisherPriority: 0
+}
+
+// Register track
+publisher.addOrUpdateTrack(videoTrack)
+```
+
+### Publishing Namespaces
+
+Make tracks discoverable by announcing namespaces:
+
+```typescript
+import { PublishNamespace, Tuple } from '@moqtail/moqtail-ts'
+
+const announce = new PublishNamespace(
+  publisher.nextClientRequestId,
+  Tuple.fromUtf8Path('live/conference')
+)
+
+const result = await publisher.publishNamespace(announce)
+if (result instanceof PublishNamespaceError) {
+  console.error(`Announcement failed: ${result.reasonPhrase}`)
+} else {
+  console.log('Namespace published successfully')
+}
+```
+
+<Accordion title="Publishing namespace patterns">
+  **Hierarchical announcements:**
+  ```typescript
+  // Announce parent namespace
+  await publisher.publishNamespace(
+    new PublishNamespace(requestId, Tuple.fromUtf8Path('live'))
+  )
+  
+  // More specific namespace
+  await publisher.publishNamespace(
+    new PublishNamespace(requestId, Tuple.fromUtf8Path('live/conference'))
+  )
+  ```
+
+  **Stopping announcements:**
+  ```typescript
+  const done = new PublishNamespaceDone(Tuple.fromUtf8Path('live/conference'))
+  await publisher.publishNamespaceDone(done)
+  ```
+</Accordion>
+
+### Publishing Content Types
+
+#### Live Content Publishing
+
+For real-time streaming:
+
+```typescript
+import { LiveTrackSource } from '@moqtail/moqtail-ts'
+
+// Create live content stream
+const liveStream = new ReadableStream<MoqtObject>({
+  start(controller) {
+    let groupId = 0n
+    let objectId = 0n
+    
+    // Generate objects continuously
+    setInterval(() => {
+      const payload = captureFrame()
+      const obj = MoqtObject.newWithPayload(
+        fullTrackName,
+        new Location(groupId, objectId++),
+        128,
+        ObjectForwardingPreference.Subgroup,
+        0n,
+        null,
+        payload
+      )
+      controller.enqueue(obj)
+      
+      // Start new group every 30 frames
+      if (objectId % 30n === 0n) {
+        groupId++
+        objectId = 0n
+      }
+    }, 33)  // ~30fps
+  }
+})
+
+const liveSource = new LiveTrackSource(liveStream)
+
+const track: Track = {
+  fullTrackName,
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { live: liveSource },
+  publisherPriority: 0
+}
+```
+
+#### Static Content Publishing
+
+For pre-recorded or cached content:
+
+```typescript
+import { StaticTrackSource, MemoryObjectCache } from '@moqtail/moqtail-ts'
+
+const cache = new MemoryObjectCache()
+
+// Populate cache with pre-recorded content
+for (let g = 0n; g < 10n; g++) {
+  for (let o = 0n; o < 30n; o++) {
+    const obj = MoqtObject.newWithPayload(
+      fullTrackName,
+      new Location(g, o),
+      128,
+      ObjectForwardingPreference.Subgroup,
+      0n,
+      null,
+      getPreRecordedFrame(g, o)
+    )
+    cache.add(obj)
+  }
+}
+
+const staticSource = new StaticTrackSource(cache)
+
+const vodTrack: Track = {
+  fullTrackName: FullTrackName.tryNew('vod/content', 'movie'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: { past: staticSource },
+  publisherPriority: 64
+}
+```
+
+#### Hybrid Content Publishing
+
+Combining live and cached content:
+
+```typescript
+import { HybridTrackSource, RingBufferObjectCache } from '@moqtail/moqtail-ts'
+
+const cache = new RingBufferObjectCache(300)  // Keep last 300 objects
+const liveStream = createLiveStream()
+
+const hybridSource = new HybridTrackSource(cache, liveStream)
+
+const hybridTrack: Track = {
+  fullTrackName: FullTrackName.tryNew('live/stream', 'video'),
+  forwardingPreference: ObjectForwardingPreference.Subgroup,
+  trackSource: {
+    past: hybridSource.past,   // Access to cached objects
+    live: hybridSource.live    // Access to live stream
+  },
+  publisherPriority: 8
+}
+```
+
+<Note>
+Hybrid tracks enable catch-up scenarios where subscribers can fetch recent history before joining the live stream.
+</Note>
+
+### Proactive Publishing
+
+Publishers can proactively push content to relays:
+
+```typescript
+import { Publish } from '@moqtail/moqtail-ts'
+
+const publish = new Publish(
+  publisher.nextClientRequestId,
+  fullTrackName
+)
+
+const result = await publisher.publish(publish)
+if (result instanceof PublishError) {
+  console.error(`Publish failed: ${result.reasonPhrase}`)
+} else {
+  console.log('Proactive publishing started')
+  // Track content is now being pushed to relay
+}
+```
+
+## Subscriber Role
+
+Subscribers discover and consume content from publishers.
+
+### Creating a Subscriber
+
+```typescript
+const subscriber = await MOQtailClient.new({
+  url: 'https://relay.example.com/moq',
+  supportedVersions: [0xff00000e],
+  callbacks: {
+    onMessageReceived: (msg) => console.log('Received:', msg)
+  }
+})
+```
+
+### Discovering Content
+
+Subscribe to namespace announcements:
+
+```typescript
+import { SubscribeNamespace } from '@moqtail/moqtail-ts'
+
+const subscribeAnnounce = new SubscribeNamespace(
+  Tuple.fromUtf8Path('live')  // Subscribe to 'live' prefix
+)
+
+await subscriber.subscribeNamespace(subscribeAnnounce)
+
+// Client will receive PublishNamespace messages for matching namespaces
+```
+
+### Subscribing to Content
+
+#### Live Subscription
+
+Subscribe to live content from the current point:
+
+```typescript
+import { FilterType, GroupOrder } from '@moqtail/moqtail-ts'
+
+const result = await subscriber.subscribe({
+  fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+  priority: 0,                      // Highest priority
+  groupOrder: GroupOrder.Original,  // Original order
+  forward: true,                    // Forward direction
+  filterType: FilterType.LatestObject  // Start from latest
+})
+
+if (result instanceof SubscribeError) {
+  console.error(`Subscription failed: ${result.reasonPhrase}`)
+} else {
+  // result is ReadableStream<MoqtObject>
+  const reader = result.getReader()
+  
+  try {
+    while (true) {
+      const { done, value: obj } = await reader.read()
+      if (done) break
+      
+      console.log(`Received: group ${obj.groupId}, object ${obj.objectId}`)
+      processObject(obj)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+```
+
+#### Range Subscription
+
+Subscribe to a specific range:
+
+```typescript
+const result = await subscriber.subscribe({
+  fullTrackName,
+  priority: 0,
+  groupOrder: GroupOrder.Original,
+  forward: true,
+  filterType: FilterType.AbsoluteRange,
+  startLocation: new Location(100n, 0n),  // Start at group 100
+  endGroup: 120n                           // End at group 120
+})
+```
+
+#### Next Group Subscription
+
+Wait for the next group boundary:
+
+```typescript
+const result = await subscriber.subscribe({
+  fullTrackName,
+  priority: 0,
+  groupOrder: GroupOrder.Original,
+  forward: true,
+  filterType: FilterType.NextGroupStart  // Wait for next group
+})
+```
+
+<Accordion title="Choosing the right filter type">
+  **FilterType.LatestObject:**
+  - Join live stream immediately
+  - May start mid-group (non-decodable)
+  - Best for: Low-latency scenarios
+
+  **FilterType.NextGroupStart:**
+  - Wait for next group boundary
+  - Ensures decodable content
+  - Best for: Video with GOP dependencies
+
+  **FilterType.AbsoluteStart:**
+  - Start from specific location
+  - Best for: Resuming interrupted streams
+
+  **FilterType.AbsoluteRange:**
+  - Request specific range
+  - Best for: Previews, segments, thumbnails
+</Accordion>
+
+### Fetching Historical Content
+
+Retrieve specific ranges of cached content:
+
+```typescript
+import { FetchType } from '@moqtail/moqtail-ts'
+
+const fetchResult = await subscriber.fetch({
+  priority: 32,
+  groupOrder: GroupOrder.Original,
+  typeAndProps: {
+    type: FetchType.StandAlone,
+    props: {
+      fullTrackName,
+      startLocation: new Location(0n, 0n),
+      endLocation: new Location(10n, 0n)
+    }
+  }
+})
+
+if (fetchResult instanceof FetchError) {
+  console.error(`Fetch failed: ${fetchResult.reasonPhrase}`)
+} else {
+  const { requestId, stream } = fetchResult
+  const reader = stream.getReader()
+  
+  try {
+    while (true) {
+      const { done, value: obj } = await reader.read()
+      if (done) break
+      processObject(obj)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+```
+
+### Subscription Management
+
+#### Updating Subscriptions
+
+```typescript
+import { SubscribeUpdate } from '@moqtail/moqtail-ts'
+
+const update = new SubscribeUpdate(
+  subscriptionRequestId,
+  new Location(150n, 0n),  // New start location
+  0n,                       // New start object
+  200n,                     // New end group
+  0n,                       // New end object
+  16,                       // New priority
+  null                      // Parameters
+)
+
+await subscriber.subscribeUpdate(update)
+```
+
+<Note>
+Subscription updates can only **narrow** the range (move start forward, move end backward). Expanding requires a new subscription.
+</Note>
+
+#### Unsubscribing
+
+```typescript
+await subscriber.unsubscribe(subscriptionRequestId)
+```
+
+#### Switching Tracks
+
+Seamlessly switch to a different track:
+
+```typescript
+const switchResult = await subscriber.switch({
+  fullTrackName: newTrackName,
+  subscriptionRequestId: currentSubscriptionId,
+  parameters: null
+})
+```
+
+## Complete Publisher Example
+
+```typescript
+import { 
+  MOQtailClient, 
+  Track, 
+  FullTrackName, 
+  ObjectForwardingPreference,
+  LiveTrackSource,
+  MoqtObject,
+  Location,
+  PublishNamespace,
+  Tuple
+} from '@moqtail/moqtail-ts'
+
+async function startPublisher() {
+  // Create client
+  const client = await MOQtailClient.new({
+    url: 'https://relay.example.com/moq',
+    supportedVersions: [0xff00000e]
+  })
+  
+  // Create live stream
+  const liveStream = new ReadableStream<MoqtObject>({
+    async start(controller) {
+      let groupId = 0n
+      let objectId = 0n
+      
+      const interval = setInterval(() => {
+        const payload = generateVideoFrame()
+        const obj = MoqtObject.newWithPayload(
+          FullTrackName.tryNew('live/demo', 'video'),
+          new Location(groupId, objectId++),
+          128,
+          ObjectForwardingPreference.Subgroup,
+          0n,
+          null,
+          payload
+        )
+        controller.enqueue(obj)
+        
+        if (objectId === 30n) {
+          groupId++
+          objectId = 0n
+        }
+      }, 33)
+    }
+  })
+  
+  // Create and register track
+  const track: Track = {
+    fullTrackName: FullTrackName.tryNew('live/demo', 'video'),
+    forwardingPreference: ObjectForwardingPreference.Subgroup,
+    trackSource: { live: new LiveTrackSource(liveStream) },
+    publisherPriority: 0
+  }
+  
+  client.addOrUpdateTrack(track)
+  
+  // Announce namespace
+  await client.publishNamespace(
+    new PublishNamespace(
+      client.nextClientRequestId,
+      Tuple.fromUtf8Path('live/demo')
+    )
+  )
+  
+  console.log('Publisher started')
+  return client
+}
+```
+
+## Complete Subscriber Example
+
+```typescript
+import {
+  MOQtailClient,
+  FullTrackName,
+  FilterType,
+  GroupOrder,
+  SubscribeError,
+  PullPlayoutBuffer
+} from '@moqtail/moqtail-ts'
+
+async function startSubscriber() {
+  // Create client
+  const client = await MOQtailClient.new({
+    url: 'https://relay.example.com/moq',
+    supportedVersions: [0xff00000e]
+  })
+  
+  // Subscribe to track
+  const result = await client.subscribe({
+    fullTrackName: FullTrackName.tryNew('live/demo', 'video'),
+    priority: 0,
+    groupOrder: GroupOrder.Original,
+    forward: true,
+    filterType: FilterType.LatestObject
+  })
+  
+  if (result instanceof SubscribeError) {
+    console.error('Subscription failed:', result.reasonPhrase)
+    return
+  }
+  
+  // Set up playout buffer
+  const playoutBuffer = new PullPlayoutBuffer(result, {
+    bucketCapacity: 50,
+    targetLatencyMs: 500,
+    maxLatencyMs: 2000
+  })
+  
+  // Consumer-driven playout
+  const playoutLoop = () => {
+    playoutBuffer.nextObject((obj) => {
+      if (obj) {
+        decodeAndRender(obj)
+      }
+      requestAnimationFrame(playoutLoop)
+    })
+  }
+  
+  requestAnimationFrame(playoutLoop)
+  console.log('Subscriber started')
+  return client
+}
+```
+
+<Card title="Next Steps" icon="arrow-right" href="/concepts/content-sources">
+  Learn about content sources and how they provide objects to tracks
+</Card>
